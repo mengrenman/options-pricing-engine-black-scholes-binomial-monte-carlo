@@ -115,23 +115,26 @@ See the example notebook:
 
 ## Project structure
 
-```bash
-src/
-  optpricer/
-    __init__.py           # public API + version
-    core.py               # OptionSpec, CALL/PUT
-    black_scholes.py      # BS price, Greeks, implied vol
-    binomial.py           # CRR tree (Euro/American)
-    monte_carlo.py        # terminal-only MC (price, stderr)
-    processes.py          # path generators (GBM, Local Vol, Heston,...)
-tests/
-  test_black_scholes.py
-  test_monte_carlo_vs_bs.py
-notebooks/
-  01_bs_mc_quickstart.ipynb
-  02_mc_vs_bs_and_visualization.ipynb
-  03_smile_models.ipynb
-```
+~~~
+.
+├── src/
+│   └── optpricer/
+│       ├── __init__.py                # public API + version
+│       ├── core.py                    # OptionSpec, CALL/PUT
+│       ├── black_scholes.py          # BS price, Greeks, implied vol
+│       ├── binomial.py               # CRR tree (Euro/American)
+│       ├── monte_carlo.py            # terminal-only MC (price, stderr)
+│       └── processes.py              # path generators (GBM, Local Vol, Heston,...)
+│ 
+├── tests/
+│   ├── test_black_scholes.py
+│   └── test_monte_carlo_vs_bs.py
+│ 
+└── notebooks/
+    ├── 01_bs_mc_quickstart.ipynb
+    ├── 02_mc_vs_bs_and_visualization.ipynb
+    └── 03_smile_models.ipynb
+~~~
 
 ---
 
