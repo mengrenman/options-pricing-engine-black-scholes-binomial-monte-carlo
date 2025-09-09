@@ -127,7 +127,7 @@ src/
 tests/
   test_black_scholes.py
   test_monte_carlo_vs_bs.py
-examples/
+notebooks/
   01_bs_quickstart.ipynb
   02_mc_vs_bs.ipynb
   03_smile_models.ipynb
