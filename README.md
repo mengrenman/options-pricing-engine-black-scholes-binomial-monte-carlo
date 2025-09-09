@@ -143,21 +143,6 @@ pytest -q
 
 ---
 
-## FAQ
-
-**Why is kind not part of OptionSpec?**  
-OptionSpec describes the market/contract state; the payoff (CALL/PUT) is passed to a pricer.  
-This keeps the spec reusable (e.g., compute both call and put, switch payoff types).
-
-**What does Monte Carlo return?**  
-A tuple `(price, stderr)`. The estimator uses antithetic variates and a control variate  
-$Y = e^{-rT} S_T$ with known expectation $S_0 e^{-qT}$.
-
-
-**Does the repo name matter?**  
-No — the importable package is determined by `src/optpricer/` and `pyproject.toml` (`name="optpricer"`).
-
----
 
 ## Contributing
 
