@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optpricer"
+version = "0.1.0"
+description = "Options pricing engine: Black–Scholes, Binomial (European/American), and Monte Carlo with smile-capable processes."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Mengren Man" }]
+license = { file = "LICENSE" }
+keywords = ["options", "pricing", "black-scholes", "binomial", "monte-carlo", "heston", "local-vol", "finance"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+dependencies = [
+  "numpy>=1.23",
+  "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5",
+  "black>=24.3",
+  "mypy>=1.10",
+  "build>=1.2",
+  "twine>=5.0",
+  "ipykernel>=6.29",
+]
+
+[project.scripts]
+optpricer = "optpricer.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["optpricer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 99
+target-version = "py310"
+
+[tool.black]
+line-length = 99
+target-version = ["py310"]
