@@ -128,8 +128,8 @@ tests/
   test_black_scholes.py
   test_monte_carlo_vs_bs.py
 notebooks/
-  01_bs_quickstart.ipynb
-  02_mc_vs_bs.ipynb
+  01_bs_mc_quickstart.ipynb
+  02_mc_vs_bs_and_visualization.ipynb
   03_smile_models.ipynb
 ```
 
