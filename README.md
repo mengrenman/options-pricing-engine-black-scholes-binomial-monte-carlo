@@ -101,15 +101,15 @@ optpricer mc --S0 100 --K 110 --T 1 --r 0.03 --sigma 0.20 --n-paths 200000 --see
 - **Heston paths**: stochastic volatility → natural smiles/smirks.
 
 See the example notebook:  
-`examples/03_smile_models.ipynb`
+`notebooks/03_smile_models.ipynb`
 
 ---
 
 ## Examples / Notebooks
 
-- `examples/01_bs_quickstart.ipynb` — BS pricing & Greeks  
-- `examples/02_mc_vs_bs.ipynb` — Monte Carlo vs Black–Scholes (accuracy & stderr)  
-- `examples/03_smile_models.ipynb` — IV surface + Local Vol & Heston smiles  
+- `notebooks/01_bs_quickstart.ipynb` — BS pricing & Greeks  
+- `notebooks/02_mc_vs_bs.ipynb` — Monte Carlo vs Black–Scholes (accuracy & stderr)  
+- `notebooks/03_smile_models.ipynb` — IV surface + Local Vol & Heston smiles  
 
 ---
 
