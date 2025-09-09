@@ -151,7 +151,7 @@ This keeps the spec reusable (e.g., compute both call and put, switch payoff typ
 
 **What does Monte Carlo return?**  
 A tuple `(price, stderr)`. The estimator uses antithetic variates and a control variate  
-Y = e^{-rT} S_T with known expectation S0 * e^{-qT}.
+$Y = e^{-rT} S_T$ with known expectation $S_0 * e^{-qT}$.
 
 **Does the repo name matter?**  
 No — the importable package is determined by `src/optpricer/` and `pyproject.toml` (`name="optpricer"`).
