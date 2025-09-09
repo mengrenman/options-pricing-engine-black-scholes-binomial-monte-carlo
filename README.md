@@ -1,6 +1,6 @@
 # optpricer — A small, fast options-pricing engine
 
-Black–Scholes (closed-form + Greeks + implied vol), CRR binomial (European & American),  
+Black–Scholes (closed-form + Greeks + implied vol), Cox-Ross-Rubinstein (CRR) binomial (European & American),  
 and Monte Carlo with variance reduction. Includes smile-capable path generators you can  
 use in notebooks (local volatility, Heston, etc.).
 
