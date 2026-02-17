@@ -8,3 +8,13 @@ build/
 dist/
 .ipynb_checkpoints/
 .cache/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Local tooling
+.claude/
+
+# Notebook exports
+notebooks/*.pdf
