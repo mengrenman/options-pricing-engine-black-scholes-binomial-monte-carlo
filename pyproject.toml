@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "optpricer"
-version = "0.1.0"
-description = "Options pricing engine: Black–Scholes, Binomial (European/American), and Monte Carlo with smile-capable processes."
+version = "0.2.0"
+description = "Production options pricing engine: vectorised Black-Scholes, exotic payoffs, SVI calibration, and Monte Carlo with smile-capable processes."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Mengren Man" }]
 license = { file = "LICENSE" }
-keywords = ["options", "pricing", "black-scholes", "binomial", "monte-carlo", "heston", "local-vol", "finance"]
+keywords = ["options", "pricing", "black-scholes", "binomial", "monte-carlo", "heston", "local-vol", "svi", "calibration", "exotics", "finance", "crypto"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",

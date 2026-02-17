@@ -101,40 +101,37 @@ optpricer mc --S0 100 --K 110 --T 1 --r 0.03 --sigma 0.20 --n-paths 200000 --see
 - **Heston paths**: stochastic volatility → natural smiles/smirks.
 
 See the example notebook:  
-`notebooks/03_smile_models.ipynb`
+`examples/03_smile_models.ipynb`
 
 ---
 
 ## Examples / Notebooks
 
-- `notebooks/01_bs_quickstart.ipynb` — BS pricing & Greeks  
-- `notebooks/02_mc_vs_bs.ipynb` — Monte Carlo vs Black–Scholes (accuracy & stderr)  
-- `notebooks/03_smile_models.ipynb` — IV surface + Local Vol & Heston smiles  
+- `examples/01_bs_quickstart.ipynb` — BS pricing & Greeks  
+- `examples/02_mc_vs_bs.ipynb` — Monte Carlo vs Black–Scholes (accuracy & stderr)  
+- `examples/03_smile_models.ipynb` — IV surface + Local Vol & Heston smiles  
 
 ---
 
 ## Project structure
 
-~~~
-.
-├── src/
-│   └── optpricer/
-│       ├── __init__.py                # public API + version
-│       ├── core.py                    # OptionSpec, CALL/PUT
-│       ├── black_scholes.py          # BS price, Greeks, implied vol
-│       ├── binomial.py               # CRR tree (Euro/American)
-│       ├── monte_carlo.py            # terminal-only MC (price, stderr)
-│       └── processes.py              # path generators (GBM, Local Vol, Heston,...)
-│ 
-├── tests/
-│   ├── test_black_scholes.py
-│   └── test_monte_carlo_vs_bs.py
-│ 
-└── notebooks/
-    ├── 01_bs_mc_quickstart.ipynb
-    ├── 02_mc_vs_bs_and_visualization.ipynb
-    └── 03_smile_models.ipynb
-~~~
+```bash
+src/
+  optpricer/
+    __init__.py           # public API + version
+    core.py               # OptionSpec, CALL/PUT
+    black_scholes.py      # BS price, Greeks, implied vol
+    binomial.py           # CRR tree (Euro/American)
+    monte_carlo.py        # terminal-only MC (price, stderr)
+    processes.py          # path generators (GBM, Local Vol, Heston,...)
+tests/
+  test_black_scholes.py
+  test_monte_carlo_vs_bs.py
+examples/
+  01_bs_quickstart.ipynb
+  02_mc_vs_bs.ipynb
+  03_smile_models.ipynb
+```
 
 ---
 
@@ -146,6 +143,21 @@ pytest -q
 
 ---
 
+## FAQ
+
+**Why is kind not part of OptionSpec?**  
+OptionSpec describes the market/contract state; the payoff (CALL/PUT) is passed to a pricer.  
+This keeps the spec reusable (e.g., compute both call and put, switch payoff types).
+
+**What does Monte Carlo return?**  
+A tuple `(price, stderr)`. The estimator uses antithetic variates and a control variate  
+$Y = e^{-rT}\,S_T$ with known expectation $S_0\, e^{-qT}$.
+
+
+**Does the repo name matter?**  
+No — the importable package is determined by `src/optpricer/` and `pyproject.toml` (`name="optpricer"`).
+
+---
 
 ## Contributing
 

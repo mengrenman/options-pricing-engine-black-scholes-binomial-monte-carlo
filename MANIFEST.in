@@ -1,5 +1,6 @@
 include LICENSE
 include README.md
-recursive-include examples *.ipynb
+recursive-include docs/examples *.ipynb
 recursive-include tests *.py
+recursive-include scripts *.py
 recursive-include src/optpricer py.typed
