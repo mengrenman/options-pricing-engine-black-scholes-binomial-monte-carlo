@@ -15,6 +15,8 @@ __all__ = [
     "heston_paths",
     "sabr_paths",
     "local_vol_paths",
+    "gbm_milstein_paths",
+    "milstein_local_vol_paths",
 ]
 
 
@@ -252,5 +254,128 @@ def local_vol_paths(
         # guard against pathological outputs
         sig = np.clip(sig, 0.0, np.inf)
         S[t + 1, :] = S[t, :] * np.exp((r - q - 0.5 * sig * sig) * dt + sig * sqrt_dt * Z[t, :])
+
+    return S
+
+
+# ---------------------------------------------------------------------------
+# 6) GBM Milstein (constant vol — demonstrates the scheme)
+# ---------------------------------------------------------------------------
+def gbm_milstein_paths(
+    S0: float, r: float, q: float, sigma: float,
+    T: float, n_steps: int, n_paths: int,
+    *, antithetic: bool = True, seed: Optional[int] = None
+) -> np.ndarray:
+    """GBM Milstein paths (constant vol).
+
+    For the SDE  dS = (r-q)S dt + σ S dW  the Milstein scheme is::
+
+        S_{n+1} = S_n + (r-q) S_n dt + σ S_n √dt Z
+                  + ½ σ² S_n (Z² - 1) dt
+
+    With constant σ this is algebraically equivalent to the exact
+    log-Euler discretisation (strong order 1.0), so this function
+    exists primarily for **demonstration and convergence testing**.
+    """
+    if n_steps <= 0 or n_paths <= 0:
+        raise ValueError("n_steps and n_paths must be positive.")
+
+    rng = _rng(seed)
+    dt = T / n_steps
+    sqrt_dt = np.sqrt(dt)
+
+    Z = rng.standard_normal((n_steps, n_paths))
+    if antithetic:
+        Z = np.concatenate([Z, -Z], axis=1)
+
+    n_cols = Z.shape[1]
+    S = np.empty((n_steps + 1, n_cols), dtype=float)
+    S[0, :] = S0
+
+    for t in range(n_steps):
+        Zt = Z[t, :]
+        S_t = S[t, :]
+        # Milstein step (explicit)
+        S[t + 1, :] = (S_t
+                        + (r - q) * S_t * dt
+                        + sigma * S_t * sqrt_dt * Zt
+                        + 0.5 * sigma**2 * S_t * (Zt**2 - 1.0) * dt)
+        S[t + 1, :] = np.maximum(S[t + 1, :], 1e-10)
+
+    return S
+
+
+# ---------------------------------------------------------------------------
+# 7) Milstein for local vol
+# ---------------------------------------------------------------------------
+def milstein_local_vol_paths(
+    S0: float, r: float, q: float,
+    T: float, n_steps: int, n_paths: int,
+    sigma_loc: Callable[[np.ndarray, float], np.ndarray],
+    *, antithetic: bool = True, seed: Optional[int] = None,
+    dS_bump: float = 0.01,
+) -> np.ndarray:
+    """Local-vol Milstein paths (strong order 1.0).
+
+    For the SDE  dS = (r-q) S dt + σ(S,t) S dW  the Milstein scheme is::
+
+        S_{n+1} = S_n + (r-q) S_n dt + σ_n S_n √dt Z
+                  + ½ σ_n σ'_n S_n² (Z² - 1) dt
+
+    where σ'(S,t) = ∂[σ(S,t)·S]/∂S is approximated via central finite
+    differences using a bump of size ``dS_bump * S``.
+
+    Parameters
+    ----------
+    S0, r, q, T, n_steps, n_paths : numeric
+        Model parameters.
+    sigma_loc : callable
+        ``sigma_loc(S_array, t) -> sigma_array``.
+    dS_bump : float
+        Relative bump size for the σ′ finite-difference (default 0.01).
+
+    Returns
+    -------
+    ndarray, shape (n_steps+1, n_paths_eff)
+    """
+    if n_steps <= 0 or n_paths <= 0:
+        raise ValueError("n_steps and n_paths must be positive.")
+
+    rng = _rng(seed)
+    dt = T / n_steps
+    sqrt_dt = np.sqrt(dt)
+
+    Z = rng.standard_normal((n_steps, n_paths))
+    if antithetic:
+        Z = np.concatenate([Z, -Z], axis=1)
+
+    n_cols = Z.shape[1]
+    S = np.empty((n_steps + 1, n_cols), dtype=float)
+    S[0, :] = S0
+
+    for t in range(n_steps):
+        t_now = t * dt
+        Zt = Z[t, :]
+        S_t = S[t, :]
+
+        sig = np.asarray(sigma_loc(S_t, t_now), dtype=float)
+        sig = np.clip(sig, 1e-8, 10.0)
+
+        # Compute d(σ·S)/dS ≈ [σ(S+ε)·(S+ε) - σ(S-ε)·(S-ε)] / (2ε)
+        eps = dS_bump * S_t
+        S_up = S_t + eps
+        S_dn = np.maximum(S_t - eps, 1e-10)
+        sig_up = np.asarray(sigma_loc(S_up, t_now), dtype=float)
+        sig_dn = np.asarray(sigma_loc(S_dn, t_now), dtype=float)
+        # d(σ·S)/dS for the diffusion coefficient a(S) = σ(S)·S
+        da_dS = (sig_up * S_up - sig_dn * S_dn) / (S_up - S_dn)
+
+        # Milstein step
+        a_t = sig * S_t  # diffusion coefficient
+        S[t + 1, :] = (S_t
+                        + (r - q) * S_t * dt
+                        + a_t * sqrt_dt * Zt
+                        + 0.5 * a_t * da_dS * (Zt**2 - 1.0) * dt)
+        S[t + 1, :] = np.maximum(S[t + 1, :], 1e-10)
 
     return S

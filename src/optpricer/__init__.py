@@ -17,8 +17,31 @@ from .binomial import crr_vec
 # Exotic payoffs
 from .exotics import barrier_price, asian_price, digital_price, lookback_price
 
-# Calibration
-from .calibration import SVIParams, VolSurface, fit_svi, fit_svi_surface
+# Calibration & Dupire
+from .calibration import (
+    SVIParams, VolSurface, fit_svi, fit_svi_surface,
+    dupire_local_vol, dupire_local_vol_func,
+)
+
+# PDE (Finite Difference)
+from .pde import fd_price, fd_price_barrier, fd_greeks, fd_price_local_vol
+
+# FEM (Finite Element)
+from .fem import fem_price
+
+# Stochastic processes — Milstein schemes
+from .processes import gbm_milstein_paths, milstein_local_vol_paths
+
+# Risk engine
+from .risk import (
+    numerical_greeks, scenario_grid, portfolio_risk,
+    var_historical, cvar_historical,
+)
+
+# Model validation
+from .validation import (
+    cross_validate, convergence_analysis, stress_test, backtest_delta_hedge,
+)
 
 __all__ = [
     # Legacy
@@ -31,8 +54,21 @@ __all__ = [
     "bs_price_vec", "bs_greeks_vec", "bs_implied_vol_vec", "crr_vec",
     # Exotics
     "barrier_price", "asian_price", "digital_price", "lookback_price",
-    # Calibration
+    # Calibration & Dupire
     "SVIParams", "VolSurface", "fit_svi", "fit_svi_surface",
+    "dupire_local_vol", "dupire_local_vol_func",
+    # PDE (Finite Difference)
+    "fd_price", "fd_price_barrier", "fd_greeks", "fd_price_local_vol",
+    # FEM (Finite Element)
+    "fem_price",
+    # Milstein
+    "gbm_milstein_paths", "milstein_local_vol_paths",
+    # Risk
+    "numerical_greeks", "scenario_grid", "portfolio_risk",
+    "var_historical", "cvar_historical",
+    # Validation
+    "cross_validate", "convergence_analysis", "stress_test",
+    "backtest_delta_hedge",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

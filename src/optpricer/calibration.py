@@ -47,6 +47,24 @@ class SVIParams:
         w = self.total_var(k)
         return np.sqrt(np.maximum(w, 0.0) / self.expiry)
 
+    def dw_dk(self, k: np.ndarray | float) -> np.ndarray:
+        """First derivative of total variance w.r.t. log-moneyness.
+
+        dw/dk = b * (rho + (k - m) / sqrt((k - m)^2 + sigma^2))
+        """
+        k = np.asarray(k, dtype=float)
+        u = k - self.m
+        return self.b * (self.rho + u / np.sqrt(u * u + self.sigma ** 2))
+
+    def d2w_dk2(self, k: np.ndarray | float) -> np.ndarray:
+        """Second derivative of total variance w.r.t. log-moneyness.
+
+        d^2w/dk^2 = b * sigma^2 / ((k - m)^2 + sigma^2)^{3/2}
+        """
+        k = np.asarray(k, dtype=float)
+        u = k - self.m
+        return self.b * self.sigma ** 2 / (u * u + self.sigma ** 2) ** 1.5
+
 
 # ---------------------------------------------------------------------------
 # VolSurface — plugs into MarketData.vol_surface
@@ -236,3 +254,132 @@ def fit_svi_surface(
             market_ivs_by_expiry[T],
         )
     return VolSurface(slices, forward_curve=forwards)
+
+
+# ---------------------------------------------------------------------------
+# Dupire local volatility
+# ---------------------------------------------------------------------------
+
+def dupire_local_vol(
+    surface: VolSurface,
+    S: float | np.ndarray,
+    t: float,
+    r: float,
+    q: float,
+    *,
+    dT: float = 1e-4,
+) -> float | np.ndarray:
+    """Compute Dupire local volatility at ``(S, t)`` from a calibrated surface.
+
+    Uses Dupire's formula in total-variance / log-moneyness coordinates:
+
+    .. math::
+
+        \\sigma_{\\mathrm{loc}}^2(K,T) =
+        \\frac{\\partial w / \\partial T}
+             {1 - \\frac{y}{w}\\frac{\\partial w}{\\partial y}
+              + \\frac{1}{4}\\left(-\\frac{1}{4} - \\frac{1}{w}
+              + \\frac{y^2}{w^2}\\right)\\left(\\frac{\\partial w}{\\partial y}\\right)^2
+              + \\frac{1}{2}\\frac{\\partial^2 w}{\\partial y^2}}
+
+    where ``w = IV² T`` and ``y = ln(K/F)``.
+
+    Here *S* plays the role of *K* (strike) at the local-vol evaluation
+    point, and the forward ``F(t) = S0 exp((r-q) t)`` is derived from the
+    surface's forward curve or approximated.
+
+    Parameters
+    ----------
+    surface : VolSurface
+    S : float or array
+        Spot/strike value(s) at which to evaluate local vol.
+    t : float
+        Time point.
+    r, q : float
+        Risk-free rate and dividend yield.
+    dT : float
+        Finite-difference bump for ∂w/∂T (default 1e-4).
+
+    Returns
+    -------
+    float or ndarray
+        Local volatility σ_loc(S, t).
+    """
+    S_arr = np.asarray(S, dtype=float)
+    t = max(t, 1e-8)  # avoid t = 0
+
+    # Forward at time t — use surface's forward curve if available
+    try:
+        F = surface._get_forward(t)
+    except (ValueError, KeyError):
+        F = float(S_arr.mean()) if S_arr.ndim > 0 else float(S_arr)
+
+    k = np.log(S_arr / F)
+
+    # Find the SVI slice closest to t for analytical derivatives
+    exp_arr = surface._expiries
+    idx = int(np.searchsorted(exp_arr, t))
+    idx = max(0, min(idx, len(exp_arr) - 1))
+    T_near = exp_arr[idx]
+    svi_slice = surface._slices[T_near]
+
+    # w and its spatial derivatives (analytical from SVI)
+    w = np.maximum(svi_slice.total_var(k), 1e-12)
+    dw = svi_slice.dw_dk(k)
+    d2w = svi_slice.d2w_dk2(k)
+
+    # ∂w/∂T via finite difference on the interpolating surface
+    t_up = t + dT
+    t_dn = max(t - dT, 1e-8)
+    iv_up = surface.iv_from_logm(k, t_up)
+    iv_dn = surface.iv_from_logm(k, t_dn)
+    w_up = iv_up ** 2 * t_up
+    w_dn = iv_dn ** 2 * t_dn
+    dwdT = (w_up - w_dn) / (t_up - t_dn)
+
+    # Dupire's formula
+    numer = np.maximum(dwdT, 1e-12)
+    denom = (1.0
+             - (k / w) * dw
+             + 0.25 * (-0.25 - 1.0 / w + (k / w) ** 2) * dw ** 2
+             + 0.5 * d2w)
+    denom = np.maximum(denom, 1e-8)  # prevent negative / zero
+
+    sigma_loc_sq = numer / denom
+    sigma_loc = np.sqrt(np.maximum(sigma_loc_sq, 0.0))
+    sigma_loc = np.clip(sigma_loc, 0.01, 5.0)
+
+    if sigma_loc.ndim == 0:
+        return float(sigma_loc)
+    return sigma_loc
+
+
+def dupire_local_vol_func(
+    surface: VolSurface,
+    r: float,
+    q: float,
+) -> 'Callable[[np.ndarray, float], np.ndarray]':
+    """Return a callable ``sigma_loc(S_array, t) -> sigma_array``.
+
+    The returned function is compatible with:
+
+    - :func:`local_vol_paths` from ``processes.py``
+    - :func:`fd_price_local_vol` from ``pde.py``
+    - :func:`milstein_local_vol_paths` from ``processes.py``
+
+    Parameters
+    ----------
+    surface : VolSurface
+        Calibrated implied-vol surface.
+    r, q : float
+        Risk-free rate and dividend yield.
+
+    Returns
+    -------
+    callable
+    """
+    def _sigma_loc(S_arr: np.ndarray, t: float) -> np.ndarray:
+        result = dupire_local_vol(surface, S_arr, t, r, q)
+        return np.asarray(result, dtype=float)
+
+    return _sigma_loc
