@@ -61,6 +61,63 @@ A comprehensive options pricing library with **five independent pricing engines*
 
 ---
 
+## Architecture at a Glance
+
+```mermaid
+flowchart LR
+    subgraph Inputs
+        MKT["Market Data<br/>(spots, vols, rates)"]
+        CONTRACT["Contract Spec<br/>(strike, expiry, barrier)"]
+    end
+
+    subgraph Calibration
+        SVI["SVI Calibration<br/><i>calibration.py</i>"]
+        DUP["Dupire Local Vol<br/>σ(S, t)<br/><i>calibration.py</i>"]
+    end
+
+    subgraph Engines
+        BS["Black-Scholes<br/><i>black_scholes.py</i>"]
+        MC["Monte Carlo<br/><i>monte_carlo.py</i>"]
+        TREE["Binomial Tree<br/><i>binomial.py</i>"]
+        FDM["Finite Difference<br/><i>pde.py</i>"]
+        FEM["Finite Element<br/><i>fem.py</i>"]
+    end
+
+    subgraph Processes
+        GBM["GBM / Heston / SABR<br/><i>processes.py</i>"]
+        MIL["Milstein Schemes<br/><i>processes.py</i>"]
+    end
+
+    subgraph Outputs
+        PX["Prices"]
+        GRK["Greeks<br/>(Δ, Γ, V, Θ, ρ)"]
+        RISK["VaR / CVaR<br/>Scenario Grids"]
+        VAL["Cross-Model<br/>Validation"]
+    end
+
+    MKT --> SVI --> DUP
+    DUP --> FDM
+    DUP --> MIL --> MC
+
+    CONTRACT --> BS & MC & TREE & FDM & FEM
+    GBM --> MC
+
+    BS & MC & TREE & FDM & FEM --> PX
+    PX --> GRK
+    PX --> RISK["Risk Engine<br/><i>risk.py</i>"]
+    PX --> VAL["Validation<br/><i>validation.py</i>"]
+```
+
+**Typical desk workflow** — see [`scripts/desk_workflow_localvol_barrier.py`](scripts/desk_workflow_localvol_barrier.py) for a runnable example:
+
+1. Ingest vol quotes → **SVI calibration** (slice-by-slice)
+2. Extract **Dupire local vol** surface σ(S, t)
+3. Price barrier option via **FDM** (PDE with Dirichlet BCs) and **Monte Carlo** (Milstein paths)
+4. Compute **Greeks** (grid-based + bump-and-reprice)
+5. Compare engines → **report table**
+
+---
+
 ## Install (developer)
 
 ```bash

@@ -97,6 +97,11 @@ class VolSurface:
         self._forward_curve = forward_curve or {}
 
     @property
+    def slices(self) -> dict[float, 'SVIParams']:
+        """Mapping ``{expiry: SVIParams}`` (read-only copy)."""
+        return dict(self._slices)
+
+    @property
     def expiries(self) -> np.ndarray:
         return self._expiries.copy()
 
