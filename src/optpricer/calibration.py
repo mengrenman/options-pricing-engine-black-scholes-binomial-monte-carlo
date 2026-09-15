@@ -193,6 +193,47 @@ class VolSurface:
         alpha = (T - T_lo) / (T_hi - T_lo)
         return np.maximum((1 - alpha) * w_lo + alpha * w_hi, 0.0)
 
+    def _w_slope_on_piece(self, k: np.ndarray, idx: int) -> np.ndarray:
+        """Slope in T of the linear piece selected by ``idx``.
+
+        ``idx`` is a ``searchsorted`` index into ``_expiries``: 0 or past the
+        end selects the single-slice scaling branch of
+        ``total_var_from_logm``, otherwise the interval
+        ``(_expiries[idx-1], _expiries[idx])``.
+        """
+        exp = self._expiries
+        if idx <= 0:
+            sl = self._slices[exp[0]]
+            return np.maximum(sl.total_var(k), 0.0) / sl.expiry
+        if idx >= len(exp):
+            sl = self._slices[exp[-1]]
+            return np.maximum(sl.total_var(k), 0.0) / sl.expiry
+        T_lo, T_hi = exp[idx - 1], exp[idx]
+        w_lo = self._slices[T_lo].total_var(k) * T_lo
+        w_hi = self._slices[T_hi].total_var(k) * T_hi
+        return (w_hi - w_lo) / (T_hi - T_lo)
+
+    def dw_dT_from_logm(self, k: np.ndarray | float, T: float) -> np.ndarray:
+        """∂w/∂T of the interpolated total-variance surface, in closed form.
+
+        ``total_var_from_logm`` is piecewise linear in ``T`` -- between two
+        slices it interpolates ``w * T`` linearly, and outside the quoted
+        range it scales one slice by ``T / T_slice``.  Both pieces are linear,
+        so no finite-difference bump is needed.
+
+        The surface has a kink at every quoted expiry, where the one-sided
+        derivatives differ.  There the two are averaged, which is what a
+        centred bump straddling the kink returned.
+        """
+        k = np.asarray(k, dtype=float)
+        exp = self._expiries
+        idx_left = int(np.searchsorted(exp, T, side="left"))    # piece below T
+        idx_right = int(np.searchsorted(exp, T, side="right"))  # piece above T
+        if idx_left == idx_right:                               # away from a kink
+            return self._w_slope_on_piece(k, idx_right)
+        return 0.5 * (self._w_slope_on_piece(k, idx_left)
+                      + self._w_slope_on_piece(k, idx_right))
+
     def iv(self, K: float | np.ndarray, T: float) -> float | np.ndarray:
         """Implied vol from absolute strike(s) and expiry.
 
@@ -478,7 +519,8 @@ def dupire_local_vol(
     r, q : float
         Risk-free rate and dividend yield.
     dT : float
-        Finite-difference bump for ∂w/∂T (default 1e-4).
+        Unused.  ∂w/∂T is now computed in closed form; the parameter is kept
+        so existing callers keep working.
 
     Returns
     -------
@@ -507,13 +549,10 @@ def dupire_local_vol(
     w, dw, d2w = svi_slice.w_dw_d2w(k)
     w = np.maximum(w, 1e-12)
 
-    # ∂w/∂T via finite difference on the interpolating surface.  Total
-    # variance is taken directly rather than via iv = sqrt(w/T) squared back.
-    t_up = t + dT
-    t_dn = max(t - dT, 1e-8)
-    w_up = surface.total_var_from_logm(k, t_up)
-    w_dn = surface.total_var_from_logm(k, t_dn)
-    dwdT = (w_up - w_dn) / (t_up - t_dn)
+    # ∂w/∂T in closed form.  The interpolated surface is piecewise linear in
+    # T, so a finite-difference bump only added error and two extra passes
+    # over the strike array.
+    dwdT = surface.dw_dT_from_logm(k, t)
 
     # Dupire's formula
     numer = np.maximum(dwdT, 1e-12)
