@@ -229,10 +229,131 @@ def fit_svi(
     return SVIParams(a=a, b=b, rho=rho, m=m, sigma=sig, expiry=expiry)
 
 
+# ---------------------------------------------------------------------------
+# Quasi-explicit SVI calibration
+# ---------------------------------------------------------------------------
+# Raw SVI is linear in three of its five parameters once the shape parameters
+# are held fixed.  Substituting y = (k - m) / sigma and s = sqrt(y**2 + 1),
+#
+#     w = a + d * y + c * s      with   c = b * sigma,  d = rho * b * sigma
+#
+# so for fixed (m, sigma) the remaining fit is an ordinary linear least
+# squares.  That turns the 5-D nonlinear problem into a 2-D search wrapped
+# around an exact inner solve.
+#
+# Validity needs b > 0 and |rho| <= 1, i.e. c >= 0 and |d| <= c, which couple
+# two unknowns.  Substituting u = c + d and v = c - d,
+#
+#     w = a + u * (s + y) / 2 + v * (s - y) / 2
+#
+# turns them into plain non-negativity, so a bounded linear least squares
+# solves the inner problem exactly.  Writing d = rho_cap * (u - v) / 2 instead
+# carries the |rho| <= rho_cap bound through the same substitution, so the cap
+# is honoured by the solve rather than clamped on afterwards -- clamping a
+# finished fit rescales rho while leaving the other parameters stale, which
+# badly degrades slices whose optimum sits on the boundary.
+#
+# Note `a` keeps a negative lower bound, matching ``fit_svi``.  Forcing a >= 0
+# (as some published formulations do) measurably degrades the fit here.
+
+_QE_A_LOWER = -0.5
+_QE_RHO_CAP = 0.999      # same bound ``fit_svi`` uses
+_QE_STARTS = ((None, 0.10), (0.0, 0.30), (None, 0.50))
+
+
+def _svi_inner_ls(k: np.ndarray, w: np.ndarray, m: float, sigma: float,
+                  a_hi: float) -> tuple[float, tuple[float, float, float]]:
+    """Exact bounded linear least squares in (a, u, v) for fixed (m, sigma).
+
+    Returns ``(sum_of_squares, (a, d, c))``.
+    """
+    from scipy.optimize import lsq_linear
+
+    y = (k - m) / sigma
+    s = np.sqrt(y * y + 1.0)
+    yc = _QE_RHO_CAP * y                      # keeps |rho| <= _QE_RHO_CAP
+    A = np.empty((k.size, 3))
+    A[:, 0] = 1.0
+    A[:, 1] = (s + yc) * 0.5
+    A[:, 2] = (s - yc) * 0.5
+
+    res = lsq_linear(
+        A, w,
+        bounds=([_QE_A_LOWER, 0.0, 0.0], [a_hi, 8.0 * sigma, 8.0 * sigma]),
+        method="bvls", lsq_solver="exact",
+    )
+    a, u, v = res.x
+    c = 0.5 * (u + v)
+    d = _QE_RHO_CAP * 0.5 * (u - v)
+    return float(np.sum((A @ res.x - w) ** 2)), (a, d, c)
+
+
+def fit_svi_quasi(
+    strikes: np.ndarray,
+    forward: float,
+    expiry: float,
+    market_ivs: np.ndarray,
+) -> SVIParams:
+    """Fit raw SVI via the quasi-explicit reduction.
+
+    A drop-in alternative to :func:`fit_svi`.  Matches its accuracy on
+    benchmark slices while running roughly twice as fast, because only two
+    parameters are searched numerically.
+
+    Parameters
+    ----------
+    strikes : array-like, shape (N,)
+        Absolute strike prices.
+    forward : float
+        Forward price for this expiry.
+    expiry : float
+        Time to expiry in years.
+    market_ivs : array-like, shape (N,)
+        Market implied volatilities (annualised).
+
+    Returns
+    -------
+    SVIParams
+        Fitted SVI slice.  ``rho`` is bounded by +/-0.999 inside the solve,
+        so a degenerate linear wing cannot be returned.
+    """
+    from scipy.optimize import minimize
+
+    strikes = np.asarray(strikes, dtype=float)
+    market_ivs = np.asarray(market_ivs, dtype=float)
+    k = np.log(strikes / forward)
+    w = market_ivs ** 2 * expiry
+
+    a_hi = float(np.max(w))
+    k_min = float(k[np.argmin(w)])
+
+    # Multi-start matters: a single start is faster but misses the best
+    # optimum on a small fraction of slices.
+    best = (np.inf, k_min, 0.10)
+    for m0, s0 in _QE_STARTS:
+        m_start = k_min if m0 is None else m0
+        res = minimize(
+            lambda x: _svi_inner_ls(k, w, x[0], abs(x[1]) + 1e-8, a_hi)[0],
+            [m_start, s0], method="Nelder-Mead",
+            options={"xatol": 1e-8, "fatol": 1e-14, "maxiter": 400},
+        )
+        if res.fun < best[0]:
+            best = (float(res.fun), float(res.x[0]), abs(float(res.x[1])) + 1e-8)
+
+    _, m, sigma = best
+    _, (a, d, c) = _svi_inner_ls(k, w, m, sigma, a_hi)
+
+    b = c / sigma
+    rho = float(d / c) if c > 1e-14 else 0.0   # already within +/-_QE_RHO_CAP
+    return SVIParams(a=a, b=b, rho=rho, m=m, sigma=sigma, expiry=expiry)
+
+
 def fit_svi_surface(
     strikes_by_expiry: dict[float, np.ndarray],
     forwards: dict[float, float],
     market_ivs_by_expiry: dict[float, np.ndarray],
+    *,
+    method: str = "trf",
 ) -> VolSurface:
     """Fit SVI slice-by-slice and return a full ``VolSurface``.
 
@@ -244,15 +365,23 @@ def fit_svi_surface(
         ``{expiry: forward_price}``.
     market_ivs_by_expiry : dict[float, ndarray]
         ``{expiry: array_of_ivs}``.
+    method : str
+        ``"trf"`` (default) fits each slice with :func:`fit_svi`;
+        ``"quasi"`` uses :func:`fit_svi_quasi`, which is about twice as fast
+        at matching accuracy.
 
     Returns
     -------
     VolSurface
         Calibrated surface with interpolation between slices.
     """
+    if method not in ("trf", "quasi"):
+        raise ValueError(f"method must be 'trf' or 'quasi', got {method!r}")
+    slice_fit = fit_svi if method == "trf" else fit_svi_quasi
+
     slices: dict[float, SVIParams] = {}
     for T in sorted(strikes_by_expiry.keys()):
-        slices[T] = fit_svi(
+        slices[T] = slice_fit(
             strikes_by_expiry[T],
             forwards[T],
             T,

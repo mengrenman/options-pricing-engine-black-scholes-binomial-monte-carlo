@@ -2,7 +2,9 @@
 
 import numpy as np
 import pytest
-from optpricer.calibration import SVIParams, VolSurface, fit_svi, fit_svi_surface
+from optpricer.calibration import (
+    SVIParams, VolSurface, fit_svi, fit_svi_quasi, fit_svi_surface,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -140,3 +142,104 @@ class TestFitSVISurface:
         for T in [0.25, 0.5, 1.0]:
             iv = surface.iv(100.0, T)
             assert 0.05 < iv < 1.0, f"Unreasonable IV={iv} at T={T}"
+
+
+# ---------------------------------------------------------------------------
+# Quasi-explicit SVI fitting
+# ---------------------------------------------------------------------------
+def _svi_w(p, k):
+    km = k - p.m
+    return p.a + p.b * (p.rho * km + np.sqrt(km * km + p.sigma * p.sigma))
+
+
+def _iv_rmse(p, k, T, ivs):
+    """RMSE in implied-vol units between an SVI slice and quoted vols."""
+    w = np.maximum(_svi_w(p, k), 1e-12)
+    return float(np.sqrt(np.mean((np.sqrt(w / T) - ivs) ** 2)))
+
+
+def _slice(a, b, rho, m, sigma, T, n=25, lo=60.0, hi=160.0, fwd=100.0):
+    """Strikes / forward / ivs generated from known SVI params."""
+    K = np.linspace(lo, hi, n)
+    k = np.log(K / fwd)
+    w = SVIParams(a=a, b=b, rho=rho, m=m, sigma=sigma, expiry=T).total_var(k)
+    assert np.all(w > 0)
+    return K, fwd, T, np.sqrt(w / T)
+
+
+class TestFitSVIQuasi:
+    def test_zero_noise_recovery(self):
+        """Data generated from SVI should be recovered essentially exactly."""
+        K, fwd, T, ivs = _slice(0.04, 0.15, -0.2, 0.05, 0.10, 0.5)
+        p = fit_svi_quasi(K, fwd, T, ivs)
+        k = np.log(K / fwd)
+        assert np.max(np.abs(_svi_w(p, k) - ivs ** 2 * T)) < 1e-6
+
+    def test_parameters_are_valid(self):
+        """b > 0, |rho| <= 1, sigma > 0 and positive total variance."""
+        for args in [(0.04, 0.15, -0.2, 0.05, 0.10, 0.5),
+                     (0.02, 0.30, -0.7, -0.10, 0.25, 1.0),
+                     (0.10, 0.05, 0.4, 0.20, 0.60, 2.0)]:
+            K, fwd, T, ivs = _slice(*args)
+            p = fit_svi_quasi(K, fwd, T, ivs)
+            assert p.b > 0
+            assert abs(p.rho) <= 0.999
+            assert p.sigma > 0
+            assert np.all(_svi_w(p, np.log(K / fwd)) > 0)
+
+    def test_matches_fit_svi_accuracy(self):
+        """On a misspecified (quadratic) smile it should be no worse than fit_svi."""
+        K = np.linspace(70.0, 130.0, 25)
+        fwd, T = 100.0 * np.exp(0.03), 1.0
+        k = np.log(K / fwd)
+        ivs = 0.20 + 0.12 * k ** 2 - 0.05 * k + 0.01
+
+        rmse_q = _iv_rmse(fit_svi_quasi(K, fwd, T, ivs), k, T, ivs)
+        rmse_t = _iv_rmse(fit_svi(K, fwd, T, ivs), k, T, ivs)
+        assert rmse_q <= rmse_t + 1e-5
+
+    def test_handles_sparse_quotes(self):
+        K, fwd, T, ivs = _slice(0.03, 0.2, -0.4, 0.0, 0.2, 1.0, n=7)
+        p = fit_svi_quasi(K, fwd, T, ivs)
+        assert p.b > 0 and p.sigma > 0
+
+    def test_surface_method_switch(self):
+        K1, fwd1, T1, iv1 = _slice(0.03, 0.20, -0.30, 0.0, 0.20, 0.5)
+        K2, fwd2, T2, iv2 = _slice(0.06, 0.25, -0.35, 0.0, 0.25, 1.0)
+        strikes = {T1: K1, T2: K2}
+        fwds = {T1: fwd1, T2: fwd2}
+        ivs = {T1: iv1, T2: iv2}
+
+        surf = fit_svi_surface(strikes, fwds, ivs, method="quasi")
+        assert sorted(surf.slices.keys()) == sorted([T1, T2])
+        assert np.all(surf.iv(K1, T1) > 0)
+
+    def test_surface_rejects_unknown_method(self):
+        K, fwd, T, ivs = _slice(0.03, 0.2, -0.3, 0.0, 0.2, 1.0)
+        with pytest.raises(ValueError, match="method must be"):
+            fit_svi_surface({T: K}, {T: fwd}, {T: ivs}, method="bogus")
+
+    def test_no_worse_than_fit_svi_across_random_slices(self):
+        """Regression: rho hitting its bound must not degrade the fit.
+
+        Clamping rho after the fact (rather than bounding it inside the
+        solve) leaves the other parameters stale and blows up the error on
+        slices whose optimum sits on the boundary.
+        """
+        rng = np.random.default_rng(13)
+        worst = 0.0
+        for _ in range(40):
+            n = int(rng.choice([7, 11, 25]))
+            K = np.linspace(60.0, 150.0, n)
+            k = np.log(K / 100.0)
+            T = float(rng.choice([0.02, 0.25, 1.0, 5.0]))
+            ivs = np.maximum(
+                rng.uniform(0.12, 0.40)
+                + rng.uniform(-0.3, 0.0) * k
+                + rng.uniform(0.05, 0.5) * k * k,
+                0.02,
+            )
+
+            worst = max(worst, _iv_rmse(fit_svi_quasi(K, 100.0, T, ivs), k, T, ivs)
+                               - _iv_rmse(fit_svi(K, 100.0, T, ivs), k, T, ivs))
+        assert worst < 1e-4, f"quasi fit degraded by {worst:.2e} IV RMSE"
