@@ -293,3 +293,63 @@ class TestFusedHelpers:
             assert np.all(np.isfinite(v))
             assert np.all(v > 0.01)      # not pinned to the clip floor
             assert np.all(v < 5.0)
+
+
+# ---------------------------------------------------------------------------
+# Time interpolation of the vol surface
+# ---------------------------------------------------------------------------
+class TestSurfaceTimeInterpolation:
+    """Regression: iv_from_logm scaled SVIParams.total_var by the slice expiry,
+    but total_var already returns total variance (sigma^2 * T).  Time was
+    counted twice, so interpolated vols were badly wrong (ATM 0.093 where the
+    neighbouring slices were 0.203 and 0.205) and the surface jumped at every
+    quoted expiry."""
+
+    @staticmethod
+    def _flat_vol_surface(vol=0.2, T1=0.5, T2=2.0):
+        """Two slices carrying the SAME flat vol, so the surface is vol-flat
+        in T and every interpolated value must come back as `vol`."""
+        s1 = SVIParams(a=vol ** 2 * T1, b=0.0, rho=0.0, m=0.0, sigma=0.1, expiry=T1)
+        s2 = SVIParams(a=vol ** 2 * T2, b=0.0, rho=0.0, m=0.0, sigma=0.1, expiry=T2)
+        return VolSurface({T1: s1, T2: s2}, forward_curve={T1: 100.0, T2: 100.0})
+
+    @pytest.mark.parametrize("T", [0.5, 0.75, 1.0, 1.5, 2.0])
+    def test_flat_vol_stays_flat(self, T):
+        surf = self._flat_vol_surface(vol=0.2)
+        k = np.linspace(-0.3, 0.3, 11)
+        assert np.allclose(surf.iv_from_logm(k, T), 0.2, rtol=1e-10)
+
+    def test_interpolated_vol_lies_between_neighbours(self):
+        surf = self._surface_two_slices()
+        k = np.array([0.0])
+        lo = float(np.atleast_1d(surf.slices[0.25].iv(k))[0])
+        hi = float(np.atleast_1d(surf.slices[1.0].iv(k))[0])
+        for T in (0.4, 0.6, 0.8):
+            mid = float(np.atleast_1d(surf.iv_from_logm(k, T))[0])
+            assert min(lo, hi) <= mid <= max(lo, hi), f"T={T}: {mid} outside [{lo}, {hi}]"
+
+    def test_continuous_at_quoted_expiries(self):
+        surf = self._surface_two_slices()
+        k = np.array([0.0])
+        for E in (0.25, 1.0):
+            below = float(np.atleast_1d(surf.iv_from_logm(k, E - 1e-7))[0])
+            at = float(np.atleast_1d(surf.iv_from_logm(k, E))[0])
+            above = float(np.atleast_1d(surf.iv_from_logm(k, E + 1e-7))[0])
+            assert abs(at - below) < 1e-5
+            assert abs(at - above) < 1e-5
+
+    def test_quoted_expiry_returns_the_slice_itself(self):
+        surf = self._surface_two_slices()
+        k = np.linspace(-0.3, 0.3, 11)
+        for E in (0.25, 1.0):
+            assert np.allclose(surf.iv_from_logm(k, E), surf.slices[E].iv(k), rtol=1e-12)
+
+    def test_public_iv_uses_the_same_interpolation(self):
+        surf = self._flat_vol_surface(vol=0.25)
+        assert float(np.atleast_1d(surf.iv(100.0, 1.0))[0]) == pytest.approx(0.25, rel=1e-8)
+
+    @staticmethod
+    def _surface_two_slices():
+        s1 = SVIParams(a=0.03, b=0.10, rho=-0.2, m=0.0, sigma=0.10, expiry=0.25)
+        s2 = SVIParams(a=0.05, b=0.12, rho=-0.15, m=0.0, sigma=0.12, expiry=1.0)
+        return VolSurface({0.25: s1, 1.0: s2}, forward_curve={0.25: 100.0, 1.0: 100.0})

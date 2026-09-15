@@ -155,10 +155,12 @@ class VolSurface:
 
         T_lo = self._expiries[idx - 1]
         T_hi = self._expiries[idx]
-        w_lo = self._slices[T_lo].total_var(k) * T_lo
-        w_hi = self._slices[T_hi].total_var(k) * T_hi
+        # total_var() already returns total variance (sigma^2 * T); scaling it
+        # by the slice expiry again double-counts time.
+        w_lo = self._slices[T_lo].total_var(k)
+        w_hi = self._slices[T_hi].total_var(k)
 
-        # Linear interpolation in *total variance × T* space
+        # Linear interpolation in total variance
         alpha = (T - T_lo) / (T_hi - T_lo)
         wT = (1 - alpha) * w_lo + alpha * w_hi
         return np.sqrt(np.maximum(wT, 0.0) / T)
@@ -188,8 +190,8 @@ class VolSurface:
 
         T_lo = self._expiries[idx - 1]
         T_hi = self._expiries[idx]
-        w_lo = self._slices[T_lo].total_var(k) * T_lo
-        w_hi = self._slices[T_hi].total_var(k) * T_hi
+        w_lo = self._slices[T_lo].total_var(k)
+        w_hi = self._slices[T_hi].total_var(k)
         alpha = (T - T_lo) / (T_hi - T_lo)
         return np.maximum((1 - alpha) * w_lo + alpha * w_hi, 0.0)
 
@@ -209,8 +211,8 @@ class VolSurface:
             sl = self._slices[exp[-1]]
             return np.maximum(sl.total_var(k), 0.0) / sl.expiry
         T_lo, T_hi = exp[idx - 1], exp[idx]
-        w_lo = self._slices[T_lo].total_var(k) * T_lo
-        w_hi = self._slices[T_hi].total_var(k) * T_hi
+        w_lo = self._slices[T_lo].total_var(k)
+        w_hi = self._slices[T_hi].total_var(k)
         return (w_hi - w_lo) / (T_hi - T_lo)
 
     def dw_dT_from_logm(self, k: np.ndarray | float, T: float) -> np.ndarray:
