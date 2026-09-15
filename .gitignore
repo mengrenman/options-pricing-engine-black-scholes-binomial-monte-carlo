@@ -36,6 +36,14 @@ htmlcov/
 profile_default/
 ipython_config.py
 
+# Local tooling
+.claude/
+.cache/
+.dist/
+
+# Notebook exports
+notebooks/*.pdf
+
 # Editors / IDEs
 .idea/
 .vscode/
