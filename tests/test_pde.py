@@ -110,3 +110,73 @@ class TestFDConvergence:
         # Error should decrease with refinement
         assert errors[1] < errors[0]
         assert errors[2] < errors[1]
+
+
+# ---------------------------------------------------------------------------
+# Shared tridiagonal solver
+# ---------------------------------------------------------------------------
+class TestTridiagonalSolver:
+    """The PDE/FEM inner loop: LAPACK banded solve, must match a dense solve."""
+
+    @staticmethod
+    def _dense(a, b, c):
+        n = len(b)
+        M = np.zeros((n, n))
+        M[np.arange(n), np.arange(n)] = b
+        M[np.arange(1, n), np.arange(n - 1)] = a[1:]
+        M[np.arange(n - 1), np.arange(1, n)] = c[:-1]
+        return M
+
+    @pytest.mark.parametrize("n", [1, 2, 3, 10, 257])
+    def test_matches_dense_solve(self, n):
+        from optpricer._tridiag import solve_tridiagonal
+
+        rng = np.random.default_rng(n)
+        # diagonally dominant, as the theta-scheme systems are
+        a = rng.uniform(-1.0, -0.5, n)
+        c = rng.uniform(-1.0, -0.5, n)
+        b = np.abs(a) + np.abs(c) + rng.uniform(0.5, 1.5, n)
+        a[0] = 0.0
+        c[-1] = 0.0
+        d = rng.uniform(-1.0, 1.0, n)
+
+        x = solve_tridiagonal(a, b, c, d)
+        assert x.shape == (n,)
+        ref = np.linalg.solve(self._dense(a, b, c), d)
+        assert np.allclose(x, ref, rtol=1e-11, atol=1e-13)
+
+    def test_residual_is_small(self):
+        from optpricer._tridiag import solve_tridiagonal
+
+        rng = np.random.default_rng(0)
+        n = 400
+        a = rng.uniform(-1.0, -0.5, n)
+        c = rng.uniform(-1.0, -0.5, n)
+        b = np.abs(a) + np.abs(c) + 1.0
+        a[0] = 0.0
+        c[-1] = 0.0
+        d = rng.uniform(-1.0, 1.0, n)
+
+        x = solve_tridiagonal(a, b, c, d)
+        resid = self._dense(a, b, c) @ x - d
+        assert np.max(np.abs(resid)) < 1e-10
+
+    def test_inputs_are_not_mutated(self):
+        """The engines reuse their coefficient arrays across time steps."""
+        from optpricer._tridiag import solve_tridiagonal
+
+        a = np.array([0.0, -1.0, -1.0])
+        b = np.array([2.0, 2.0, 2.0])
+        c = np.array([-1.0, -1.0, 0.0])
+        d = np.array([1.0, 2.0, 3.0])
+        before = [arr.copy() for arr in (a, b, c, d)]
+        solve_tridiagonal(a, b, c, d)
+        for arr, orig in zip((a, b, c, d), before):
+            assert np.array_equal(arr, orig)
+
+    def test_pde_and_fem_share_one_implementation(self):
+        from optpricer import fem, pde
+        from optpricer._tridiag import solve_tridiagonal
+
+        assert pde._thomas_solve is solve_tridiagonal
+        assert fem._thomas_solve is solve_tridiagonal

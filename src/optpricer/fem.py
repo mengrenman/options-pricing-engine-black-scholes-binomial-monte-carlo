@@ -28,6 +28,7 @@ import numpy as np
 from typing import Literal
 
 from .core import OptionSpec, CALL, PUT
+from ._tridiag import solve_tridiagonal as _thomas_solve
 
 __all__ = ["fem_price"]
 
@@ -52,27 +53,6 @@ def _build_grid(
     dx = x_grid[1] - x_grid[0]
     dt = T / N_t
     return x_grid, dx, dt
-
-
-def _thomas_solve(
-    a: np.ndarray,
-    b: np.ndarray,
-    c: np.ndarray,
-    d: np.ndarray,
-) -> np.ndarray:
-    """Tridiagonal solver (Thomas algorithm), O(N)."""
-    N = len(b)
-    b_ = b.copy()
-    d_ = d.copy()
-    for i in range(1, N):
-        w = a[i] / b_[i - 1]
-        b_[i] -= w * c[i - 1]
-        d_[i] -= w * d_[i - 1]
-    x = np.empty(N)
-    x[-1] = d_[-1] / b_[-1]
-    for i in range(N - 2, -1, -1):
-        x[i] = (d_[i] - c[i] * x[i + 1]) / b_[i]
-    return x
 
 
 def _assemble_mass_stiffness(
