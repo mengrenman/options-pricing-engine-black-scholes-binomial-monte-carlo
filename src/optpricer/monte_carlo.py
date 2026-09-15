@@ -19,6 +19,13 @@ def _mc_chunk_sumstats(
     Simulate `n` terminal draws of S_T under GBM, compute discounted payoff X and
     control variate Y = e^{-rT} S_T. Return sufficient statistics to aggregate:
         n_eff, sumX, sumX2, sumY, sumY2, sumXY
+
+    With ``antithetic=True`` the statistics are accumulated over the *pair
+    averages* (X_i + X_i') / 2 rather than the 2n individual draws.  An
+    antithetic pair is negatively correlated by construction, so treating the
+    draws as independent understates the variance; the pair averages are
+    independent, so the usual variance formulas apply to them unchanged.
+    ``n_eff`` is therefore the number of pairs.
     """
     if n <= 0:
         return (0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -53,6 +60,13 @@ def _mc_chunk_sumstats(
 
     # control variate Y = e^{-rT} S_T, with known expectation EY = S0 * e^{-qT}
     Y = (df * ST).astype(dtype, copy=False)
+
+    # Collapse each antithetic pair to its average before accumulating, so the
+    # units of the statistics are independent observations.  The mean is
+    # unchanged; the variance is no longer understated.
+    if antithetic:
+        X = 0.5 * (X[:m] + X[m:])
+        Y = 0.5 * (Y[:m] + Y[m:])
 
     # sufficient statistics
     n_eff = X.size
