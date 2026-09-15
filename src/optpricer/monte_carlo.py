@@ -110,7 +110,25 @@ def euro_price_mc(
     - Optional process-level parallelism.
 
     Notes:
-    - Works great in scripts. In Jupyter, prefer n_workers=1 (or use joblib/loky externally).
+    - ``n_workers=1`` (the default) is the right choice for most runs.  A
+      process pool costs roughly 0.7-0.9 s to start where processes are
+      spawned rather than forked (macOS, Windows), and the kernel is
+      memory-bandwidth bound, so extra cores add less than core count.
+      Measured on a 16-core arm64 laptop with ``chunk_size=1_000_000``:
+
+          10M paths   serial 0.22 s   10 workers 0.94 s   -> serial wins
+          50M paths   serial 1.07 s   10 workers 1.08 s   -> a wash
+         100M paths   serial 2.12 s   10 workers 1.26 s   -> 1.7x
+         200M paths   serial 4.27 s   10 workers 1.71 s   -> 2.5x
+
+      So raise ``n_workers`` only past ~50M paths, and measure on your own
+      machine before assuming it helps.
+    - ``chunk_size`` caps memory, but the 100k default costs noticeable
+      per-chunk overhead on large runs; ~1M is a better trade above ~10M
+      paths (about 30% faster serial at 50M).
+    - With ``n_workers > 1`` from a script, guard the entry point with
+      ``if __name__ == "__main__":`` -- spawned children re-import it.
+      Notebooks already satisfy this.
     - For path-dependent payoffs, use a different routine (time stepping + on-the-fly accumulation).
     """
     S0, K, T, r, sigma = opt.S0, opt.K, opt.T, opt.r, opt.sigma
