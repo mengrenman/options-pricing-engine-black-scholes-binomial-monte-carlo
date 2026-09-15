@@ -42,6 +42,22 @@ class SVIParams:
             self.rho * km + np.sqrt(km * km + self.sigma * self.sigma)
         )
 
+    def w_dw_d2w(self, k: np.ndarray | float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Total variance and its first two k-derivatives in a single pass.
+
+        ``total_var``, ``dw_dk`` and ``d2w_dk2`` each recompute ``k - m`` and
+        the same square root.  Callers that need all three (notably
+        :func:`dupire_local_vol`) should use this instead.
+        """
+        k = np.asarray(k, dtype=float)
+        u = k - self.m
+        s2 = self.sigma * self.sigma
+        root = np.sqrt(u * u + s2)
+        w = self.a + self.b * (self.rho * u + root)
+        dw = self.b * (self.rho + u / root)
+        d2w = self.b * s2 / (root * root * root)
+        return w, dw, d2w
+
     def iv(self, k: np.ndarray | float) -> np.ndarray:
         """Return implied volatility from log-moneyness."""
         w = self.total_var(k)
@@ -146,6 +162,36 @@ class VolSurface:
         alpha = (T - T_lo) / (T_hi - T_lo)
         wT = (1 - alpha) * w_lo + alpha * w_hi
         return np.sqrt(np.maximum(wT, 0.0) / T)
+
+    def total_var_from_logm(self, k: np.ndarray | float, T: float) -> np.ndarray:
+        """Total variance w(k, T), interpolated the same way as ``iv_from_logm``.
+
+        ``iv_from_logm`` returns ``sqrt(w / T)``; callers that immediately
+        square it back (the Dupire dw/dT bump) should use this and skip the
+        round trip.
+        """
+        k = np.asarray(k, dtype=float)
+
+        def _from_slice(sl):
+            # ``iv_from_logm`` divides by the *slice* expiry in these branches,
+            # and the caller multiplies by T, so carry that ratio through.
+            return np.maximum(sl.total_var(k), 0.0) * (T / sl.expiry)
+
+        if T in self._slices:
+            return _from_slice(self._slices[T])
+
+        idx = np.searchsorted(self._expiries, T)
+        if idx == 0:
+            return _from_slice(self._slices[self._expiries[0]])
+        if idx >= len(self._expiries):
+            return _from_slice(self._slices[self._expiries[-1]])
+
+        T_lo = self._expiries[idx - 1]
+        T_hi = self._expiries[idx]
+        w_lo = self._slices[T_lo].total_var(k) * T_lo
+        w_hi = self._slices[T_hi].total_var(k) * T_hi
+        alpha = (T - T_lo) / (T_hi - T_lo)
+        return np.maximum((1 - alpha) * w_lo + alpha * w_hi, 0.0)
 
     def iv(self, K: float | np.ndarray, T: float) -> float | np.ndarray:
         """Implied vol from absolute strike(s) and expiry.
@@ -457,18 +503,16 @@ def dupire_local_vol(
     T_near = exp_arr[idx]
     svi_slice = surface._slices[T_near]
 
-    # w and its spatial derivatives (analytical from SVI)
-    w = np.maximum(svi_slice.total_var(k), 1e-12)
-    dw = svi_slice.dw_dk(k)
-    d2w = svi_slice.d2w_dk2(k)
+    # w and its spatial derivatives (analytical from SVI), one pass
+    w, dw, d2w = svi_slice.w_dw_d2w(k)
+    w = np.maximum(w, 1e-12)
 
-    # ∂w/∂T via finite difference on the interpolating surface
+    # ∂w/∂T via finite difference on the interpolating surface.  Total
+    # variance is taken directly rather than via iv = sqrt(w/T) squared back.
     t_up = t + dT
     t_dn = max(t - dT, 1e-8)
-    iv_up = surface.iv_from_logm(k, t_up)
-    iv_dn = surface.iv_from_logm(k, t_dn)
-    w_up = iv_up ** 2 * t_up
-    w_dn = iv_dn ** 2 * t_dn
+    w_up = surface.total_var_from_logm(k, t_up)
+    w_dn = surface.total_var_from_logm(k, t_dn)
     dwdT = (w_up - w_dn) / (t_up - t_dn)
 
     # Dupire's formula

@@ -243,3 +243,53 @@ class TestFitSVIQuasi:
             worst = max(worst, _iv_rmse(fit_svi_quasi(K, 100.0, T, ivs), k, T, ivs)
                                - _iv_rmse(fit_svi(K, 100.0, T, ivs), k, T, ivs))
         assert worst < 1e-4, f"quasi fit degraded by {worst:.2e} IV RMSE"
+
+
+# ---------------------------------------------------------------------------
+# Fused derivative / total-variance helpers used by dupire_local_vol
+# ---------------------------------------------------------------------------
+class TestFusedHelpers:
+    @staticmethod
+    def _surface():
+        Ts = [0.1, 0.5, 1.0, 2.0]
+        Ks = np.linspace(70.0, 130.0, 21)
+        fwd = {T: 100.0 * np.exp(0.03 * T) for T in Ts}
+        ivs = {}
+        for T in Ts:
+            k = np.log(Ks / fwd[T])
+            ivs[T] = 0.20 + 0.10 * k * k - 0.05 * k + 0.01 * np.sqrt(T)
+        return fit_svi_surface({T: Ks for T in Ts}, fwd, ivs)
+
+    def test_w_dw_d2w_matches_separate_methods(self):
+        p = SVIParams(a=0.04, b=0.15, rho=-0.3, m=0.05, sigma=0.12, expiry=1.0)
+        k = np.linspace(-1.2, 1.2, 101)
+        w, dw, d2w = p.w_dw_d2w(k)
+        assert np.allclose(w, p.total_var(k), rtol=0, atol=0)
+        assert np.allclose(dw, p.dw_dk(k), rtol=1e-15, atol=1e-16)
+        assert np.allclose(d2w, p.d2w_dk2(k), rtol=1e-12, atol=1e-16)
+
+    @pytest.mark.parametrize("T", [0.02, 0.1, 0.3, 1.0, 2.0, 5.0])
+    def test_total_var_from_logm_matches_iv_round_trip(self, T):
+        """Must equal iv_from_logm(k, T)**2 * T on every branch.
+
+        Regression: the exact-match and extrapolation branches of
+        iv_from_logm divide by the *slice* expiry, not by T.  Dropping that
+        ratio silently changed local vol outside the quoted tenor range.
+        """
+        surf = self._surface()
+        k = np.linspace(-0.6, 0.6, 33)
+        direct = surf.total_var_from_logm(k, T)
+        round_trip = surf.iv_from_logm(k, T) ** 2 * T
+        assert np.allclose(direct, round_trip, rtol=1e-12, atol=1e-15)
+
+    def test_dupire_unchanged_outside_quoted_tenors(self):
+        """Extrapolated tenors are where the scaling bug showed up."""
+        from optpricer.calibration import dupire_local_vol
+
+        surf = self._surface()
+        S = np.linspace(60.0, 150.0, 9)
+        for t in (0.01, 3.0):
+            v = np.atleast_1d(dupire_local_vol(surf, S, t, 0.03, 0.0))
+            assert np.all(np.isfinite(v))
+            assert np.all(v > 0.01)      # not pinned to the clip floor
+            assert np.all(v < 5.0)
