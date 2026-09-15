@@ -290,9 +290,7 @@ def backtest_delta_hedge(
         cash *= np.exp(opt.r * dt)
 
         if tau > 1e-10 and step % rebalance_freq == 0:
-            # Compute new delta
-            new_opt = replace(opt, S0=1.0, T=tau)  # placeholder S0
-            # Vectorise delta via BS vec
+            # Compute new delta -- vectorised across paths via BS vec
             from .black_scholes_vec import bs_greeks_vec
             greeks_now = bs_greeks_vec(S_t, opt.K, tau, opt.r, opt.q,
                                        opt.sigma, kind)
