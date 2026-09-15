@@ -129,11 +129,24 @@ python -m pip install -e ".[dev]"
 Using the src layout, the import path is `src/optpricer/`.
 Editable install ensures changes take effect immediately.
 
-**Optional**: set up a Jupyter kernel for this env
+### Running the notebooks
+
+The notebooks under `notebooks/` need plotting and dataframe libraries that the core
+package itself does not require. Install the `notebooks` extra, optionally alongside `dev`:
+
+```bash
+python -m pip install -e ".[notebooks]"       # matplotlib, pandas, ipykernel
+python -m pip install -e ".[dev,notebooks]"   # notebooks + test/lint tooling
+```
+
+Then register the Jupyter kernel that the notebooks are bound to:
 
 ```bash
 python -m ipykernel install --user --name optpricer --display-name "Python (optpricer)"
 ```
+
+Every notebook records `optpricer` as its kernel, so Jupyter picks it up automatically
+once that kernelspec exists.
 
 ---
 

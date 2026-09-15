@@ -33,6 +33,11 @@ dev = [
   "twine>=5.0",
   "ipykernel>=6.29",
 ]
+notebooks = [
+  "matplotlib>=3.7",
+  "pandas>=2.0",
+  "ipykernel>=6.29",
+]
 
 [project.scripts]
 optpricer = "optpricer.cli:main"
