@@ -1,4 +1,5 @@
 """Tests for SVI calibration and VolSurface."""
+import json
 import warnings
 
 import numpy as np
@@ -677,3 +678,174 @@ class TestClampConsistency:
             warnings.simplefilter("error")          # any warning fails the test
             v = np.atleast_1d(dupire_local_vol(surf, S, 0.4, 0.03, 0.0))
         assert np.all(np.isfinite(v)) and np.all(v > 0.01)
+
+
+# ---------------------------------------------------------------------------
+# Serialisation
+# ---------------------------------------------------------------------------
+class TestSerialisation:
+    @staticmethod
+    def _surface(label="SPX"):
+        Ts = [0.1, 0.25, 0.5, 1.0, 2.0]
+        Ks = np.linspace(70.0, 130.0, 21)
+        fwd = {T: 100.0 * np.exp(0.03 * T) for T in Ts}
+        ivs = {}
+        for T in Ts:
+            k = np.log(Ks / fwd[T])
+            ivs[T] = 0.20 + 0.10 * k * k - 0.05 * k + 0.01 * np.sqrt(T)
+        s = fit_svi_surface({T: Ks for T in Ts}, fwd, ivs)
+        s.label = label
+        return s
+
+    # --- round trip -------------------------------------------------------
+    def test_restored_surface_behaves_identically(self):
+        """Field equality is not the bar; the restored surface must PRICE the same."""
+        from optpricer.calibration import dupire_local_vol
+
+        orig = self._surface()
+        back = VolSurface.from_json(orig.to_json())
+        k = np.linspace(-0.6, 0.6, 97)
+        S = np.linspace(60.0, 160.0, 97)
+
+        for T in (0.05, 0.1, 0.175, 0.4, 1.0, 2.0, 3.0):
+            assert np.array_equal(orig.iv_from_logm(k, T), back.iv_from_logm(k, T))
+            assert np.array_equal(orig.total_var_from_logm(k, T), back.total_var_from_logm(k, T))
+            assert np.array_equal(orig.dw_dT_from_logm(k, T), back.dw_dT_from_logm(k, T))
+            for a, b in zip(orig.w_dw_d2w_from_logm(k, T), back.w_dw_d2w_from_logm(k, T)):
+                assert np.array_equal(a, b)
+        for t in (0.15, 0.4, 1.0, 2.5):
+            assert np.array_equal(
+                np.atleast_1d(dupire_local_vol(orig, S, t, 0.03, 0.0)),
+                np.atleast_1d(dupire_local_vol(back, S, t, 0.03, 0.0)),
+            )
+            assert orig.forward_at(t, 0.03, 0.0) == back.forward_at(t, 0.03, 0.0)
+
+    def test_round_trip_is_idempotent(self):
+        orig = self._surface()
+        once = orig.to_json()
+        assert VolSurface.from_json(once).to_json() == once
+
+    def test_output_is_strict_json(self):
+        """json.dumps emits bare NaN by default, which other parsers reject."""
+        text = self._surface().to_json()
+
+        def _boom(token):
+            raise AssertionError(f"non-standard literal {token!r} in output")
+
+        json.loads(text, parse_constant=_boom)
+
+    @pytest.mark.parametrize("label", ["SPX", "SPXW", None])
+    def test_label_round_trips(self, label):
+        s = self._surface(label=label)
+        assert VolSurface.from_json(s.to_json()).label == label
+
+    def test_empty_forward_curve_round_trips(self):
+        bare = VolSurface(self._surface().slices)
+        back = VolSurface.from_json(bare.to_json())
+        assert back._forward_curve == {}
+
+    def test_svi_params_round_trip(self):
+        p = SVIParams(a=-0.0234, b=0.1415, rho=-0.9265, m=0.3589, sigma=0.7932, expiry=1 / 365)
+        q = SVIParams.from_dict(p.to_dict())
+        for f in ("a", "b", "rho", "m", "sigma", "expiry"):
+            assert getattr(q, f) == getattr(p, f), f
+
+    # --- why a list, not an object ---------------------------------------
+    def test_duplicate_expiry_in_a_list_is_caught(self):
+        """The reason slices are a list: json.loads keeps only the LAST of two
+        identical object keys, and "0.25", "0.250" and "2.5e-1" all parse to the
+        same float. Both merges happen before this class sees the payload. A
+        list keeps duplicates so they can be rejected."""
+        d = self._surface().to_dict()
+        with pytest.raises(ValueError, match="Duplicate expiry"):
+            VolSurface.from_dict({**d, "slices": d["slices"] + [d["slices"][0]]})
+
+    def test_json_object_keys_give_a_clear_error(self):
+        s = self._surface()
+        with pytest.raises(ValueError, match="Expiries must be numbers"):
+            VolSurface({"0.1": s.slices[0.1]})
+
+    def test_slice_key_and_expiry_must_agree(self):
+        """iv_from_logm's exact-match branch divides by the slice's own expiry
+        while the interpolation branch scales by T/slice.expiry, so a mismatch
+        is a wrong-number bug."""
+        s = VolSurface({0.5: SVIParams(a=0.04, b=0.1, rho=0.0, m=0.0, sigma=0.1, expiry=1.0)})
+        with pytest.raises(ValueError, match="carries expiry"):
+            s.to_dict()
+
+    # --- refusing bad payloads -------------------------------------------
+    def test_non_finite_never_serialises(self):
+        """Guard lives in to_dict, not only to_json, so json.dumps(s.to_dict())
+        cannot write a file to_json would have refused."""
+        s = VolSurface({1.0: SVIParams(a=np.nan, b=0.1, rho=0.0, m=0.0, sigma=0.1, expiry=1.0)})
+        with pytest.raises(ValueError, match="must be finite"):
+            s.to_dict()
+
+    @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+    def test_non_standard_literals_are_refused_on_load(self, literal):
+        payload = (
+            '{"schema":"optpricer.volsurface","version":1,"label":null,"slices":'
+            f'[{{"a":{literal},"b":0.1,"rho":0.0,"m":0.0,"sigma":0.1,"expiry":1.0}}],'
+            '"forward_curve":[]}'
+        )
+        with pytest.raises(ValueError, match="Refusing to load"):
+            VolSurface.from_json(payload)
+
+    @pytest.mark.parametrize("value", ["1e400", "-1e400"])
+    def test_overflow_to_infinity_is_caught(self, value):
+        """1e400 is a legal JSON number, so parse_constant never fires on it;
+        the finiteness check on every value is what catches it."""
+        payload = (
+            '{"schema":"optpricer.volsurface","version":1,"label":null,"slices":'
+            f'[{{"a":{value},"b":0.1,"rho":0.0,"m":0.0,"sigma":0.1,"expiry":1.0}}],'
+            '"forward_curve":[]}'
+        )
+        with pytest.raises(ValueError, match="must be finite"):
+            VolSurface.from_json(payload)
+
+    def test_underflow_to_zero_is_allowed(self):
+        """1e-400 underflows to 0.0, which is finite and a legitimate value."""
+        payload = ('{"schema":"optpricer.volsurface","version":1,"label":null,"slices":'
+                   '[{"a":1e-400,"b":0.1,"rho":0.0,"m":0.0,"sigma":0.1,"expiry":1.0}],'
+                   '"forward_curve":[]}')
+        assert VolSurface.from_json(payload).slices[1.0].a == 0.0
+
+    def test_future_version_is_refused_distinctly_from_a_foreign_file(self):
+        """Separate schema and version fields so a reader can tell 'upgrade
+        optpricer' from 'this is not a surface file'."""
+        d = self._surface().to_dict()
+        with pytest.raises(ValueError, match="Upgrade optpricer"):
+            VolSurface.from_dict({**d, "version": 99})
+        with pytest.raises(ValueError, match="Not a VolSurface payload"):
+            VolSurface.from_dict({**d, "schema": "acme.surface"})
+
+    def test_unknown_fields_are_refused_not_ignored(self):
+        """A field this version does not understand may be the one that changes
+        what the numbers mean."""
+        d = self._surface().to_dict()
+        with pytest.raises(ValueError, match="unrecognised fields"):
+            VolSurface.from_dict({**d, "surprise": 1})
+        with pytest.raises(ValueError, match="unrecognised fields"):
+            VolSurface.from_dict({**d, "slices": [{**d["slices"][0], "extra": 1}]})
+
+    @pytest.mark.parametrize("mutate,match", [
+        (lambda d: {**d, "slices": []}, "non-empty"),
+        (lambda d: {**d, "slices": [{k: v for k, v in d["slices"][0].items() if k != "rho"}]}, "missing"),
+        (lambda d: {**d, "slices": [{**d["slices"][0], "a": "0.1"}]}, "expected a number"),
+        (lambda d: {**d, "label": 42}, "label must be"),
+        (lambda d: {k: v for k, v in d.items() if k != "version"}, "version must be an integer"),
+        (lambda d: {**d, "forward_curve": [[1.0, 100.0, 7.0]]}, "two-element"),
+        (lambda d: {**d, "forward_curve": [[1.0, 100.0], [1.0, 999.0]]}, "Duplicate forward-curve"),
+        (lambda d: {**d, "forward_curve": {"1.0": 100.0}}, "must be a list"),
+    ])
+    def test_malformed_payloads_raise(self, mutate, match):
+        d = self._surface().to_dict()
+        with pytest.raises(ValueError, match=match):
+            VolSurface.from_dict(mutate(d))
+
+    def test_no_file_io_in_the_library(self):
+        """The caller writes the file; the library stays at zero open()."""
+        import pathlib
+        src = pathlib.Path("src/optpricer")
+        offenders = [p.name for p in src.glob("*.py") if "open(" in p.read_text()]
+        assert not offenders, f"file I/O appeared in {offenders}"
