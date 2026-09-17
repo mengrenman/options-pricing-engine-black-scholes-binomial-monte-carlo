@@ -2,6 +2,11 @@
 # SVI (Stochastic Volatility Inspired) surface fitting and VolSurface.
 
 from __future__ import annotations
+
+import itertools
+import math
+import warnings
+
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional
@@ -99,18 +104,36 @@ class VolSurface:
     forward_curve : dict[float, float] | None
         Mapping ``{expiry: forward}``.  If provided, ``iv()`` can accept
         absolute strikes and convert to log-moneyness automatically.
+    label : str | None
+        Free-form identifier for what this surface *is* -- typically the
+        option root and settlement style, e.g. ``"SPX"`` or ``"SPXW"``.
+        Purely descriptive, but see the warning below.
+
+    Warning
+    -------
+    Slices are keyed by time to expiry as a float, so two option roots that
+    expire on the same date (SPX and SPXW, or a weekly and a monthly on the
+    same Friday) map to the *identical* key and one silently replaces the
+    other.  That collapse happens in the caller's dict before this class sees
+    it, so it cannot be detected here.  Build one surface per root and use
+    ``label`` to keep them apart.
     """
 
     def __init__(
         self,
         slices: dict[float, SVIParams],
         forward_curve: dict[float, float] | None = None,
+        label: str | None = None,
     ):
         if not slices:
             raise ValueError("At least one SVI slice is required.")
+        bad = [T for T in slices if not np.isfinite(T) or T <= 0.0]
+        if bad:
+            raise ValueError(f"Expiries must be finite and positive; got {bad}.")
         self._slices = dict(sorted(slices.items()))
         self._expiries = np.array(sorted(slices.keys()), dtype=float)
         self._forward_curve = forward_curve or {}
+        self.label = label
 
     @property
     def slices(self) -> dict[float, 'SVIParams']:
@@ -136,6 +159,25 @@ class VolSurface:
         if len(Ts) == 1:
             return float(Fs[0])
         return float(np.interp(T, Ts, Fs))
+
+    def forward_at(self, T: float, r: float = 0.0, q: float = 0.0) -> float:
+        """Forward at ``T``, carried at ``r - q`` outside the quoted range.
+
+        ``_get_forward`` interpolates inside the quoted expiries but *flat*-
+        extrapolates outside them, which understates a long-dated forward
+        badly (with a 2y last quote and 3% carry, T=5 comes back as the 2y
+        forward -- 106.18 against a true 116.18).  Beyond either end the
+        forward is grown at the cost of carry instead.
+        """
+        F = self._get_forward(T)
+        if not self._forward_curve:
+            return F
+        Ts = sorted(self._forward_curve.keys())
+        if T < Ts[0]:
+            return float(F * np.exp((r - q) * (T - Ts[0])))
+        if T > Ts[-1]:
+            return float(F * np.exp((r - q) * (T - Ts[-1])))
+        return float(F)
 
     # --- core lookup -------------------------------------------------------
     def iv_from_logm(self, k: np.ndarray | float, T: float) -> np.ndarray:
@@ -215,6 +257,45 @@ class VolSurface:
         w_hi = self._slices[T_hi].total_var(k)
         return (w_hi - w_lo) / (T_hi - T_lo)
 
+    def w_dw_d2w_from_logm(self, k: np.ndarray | float, T: float):
+        """Total variance and its two k-derivatives, evaluated at ``T``.
+
+        Differentiates in ``k`` the very interpolation ``total_var_from_logm``
+        performs in ``T``, so the three come back mutually consistent and
+        consistent with :meth:`dw_dT_from_logm`.  Reading them instead from a
+        single slice at that slice's own expiry is what made the Dupire
+        denominator disagree with its numerator.
+
+        Returns ``(w, dw/dk, d2w/dk2)``.
+        """
+        k = np.asarray(k, dtype=float)
+
+        def _from_slice(sl):
+            w, dw, d2w = sl.w_dw_d2w(k)
+            scale = T / sl.expiry                 # w(T) = w_slice * T / T_slice
+            positive = w > 0.0                    # matches the max(w, 0) clamp
+            return (np.maximum(w, 0.0) * scale,
+                    np.where(positive, dw * scale, 0.0),
+                    np.where(positive, d2w * scale, 0.0))
+
+        if T in self._slices:
+            return _from_slice(self._slices[T])
+
+        idx = np.searchsorted(self._expiries, T)
+        if idx == 0:
+            return _from_slice(self._slices[self._expiries[0]])
+        if idx >= len(self._expiries):
+            return _from_slice(self._slices[self._expiries[-1]])
+
+        T_lo = self._expiries[idx - 1]
+        T_hi = self._expiries[idx]
+        alpha = (T - T_lo) / (T_hi - T_lo)
+        w_lo, dw_lo, d2w_lo = self._slices[T_lo].w_dw_d2w(k)
+        w_hi, dw_hi, d2w_hi = self._slices[T_hi].w_dw_d2w(k)
+        return ((1 - alpha) * w_lo + alpha * w_hi,
+                (1 - alpha) * dw_lo + alpha * dw_hi,
+                (1 - alpha) * d2w_lo + alpha * d2w_hi)
+
     def dw_dT_from_logm(self, k: np.ndarray | float, T: float) -> np.ndarray:
         """∂w/∂T of the interpolated total-variance surface, in closed form.
 
@@ -252,6 +333,61 @@ class VolSurface:
 # ---------------------------------------------------------------------------
 # SVI fitting
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Input validation for the calibration entry points
+# ---------------------------------------------------------------------------
+_SVI_N_PARAMS = 5
+
+
+def _clean_slice_quotes(strikes, forward, expiry, market_ivs, *, caller):
+    """Drop unusable quotes from one smile, loudly, and validate the rest.
+
+    Real option chains routinely carry quotes that cannot be calibrated: a
+    zero-bid contract, a crossed quote, or a strike whose implied-vol solve
+    returned NaN.  Feeding those straight into the solvers is what let a
+    single NaN poison a whole surface -- ``fit_svi_quasi`` returned
+    ``SVIParams(a=nan, b=nan, ...)`` with no error, and ``fit_svi`` raised an
+    unrelated "Initial guess is outside of provided bounds".
+
+    Bad quotes are dropped with a warning naming how many, rather than
+    raising (a hard raise would reject almost every real slice) or dropping
+    silently (which changes the fit without telling anyone).
+
+    Returns ``(strikes, market_ivs)`` as clean float arrays.
+    """
+    strikes = np.asarray(strikes, dtype=float).ravel()
+    market_ivs = np.asarray(market_ivs, dtype=float).ravel()
+
+    if strikes.size != market_ivs.size:
+        raise ValueError(
+            f"{caller}: strikes and market_ivs must have the same length, got "
+            f"{strikes.size} and {market_ivs.size}."
+        )
+    if not np.isfinite(forward) or forward <= 0.0:
+        raise ValueError(f"{caller}: forward must be finite and positive, got {forward!r}.")
+    if not np.isfinite(expiry) or expiry <= 0.0:
+        raise ValueError(f"{caller}: expiry must be finite and positive, got {expiry!r}.")
+
+    good = (np.isfinite(strikes) & (strikes > 0.0)
+            & np.isfinite(market_ivs) & (market_ivs > 0.0))
+    n_bad = int((~good).sum())
+    if n_bad:
+        warnings.warn(
+            f"{caller}: dropping {n_bad} of {strikes.size} quotes at expiry "
+            f"{expiry:g} (non-finite or non-positive strike/vol); fitting the "
+            f"remaining {int(good.sum())}.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    if int(good.sum()) < _SVI_N_PARAMS:
+        raise ValueError(
+            f"{caller}: raw SVI has {_SVI_N_PARAMS} parameters but only "
+            f"{int(good.sum())} usable quotes remain at expiry {expiry:g}; the "
+            "fit would be underdetermined."
+        )
+    return strikes[good], market_ivs[good]
+
+
 def fit_svi(
     strikes: np.ndarray,
     forward: float,
@@ -285,8 +421,9 @@ def fit_svi(
     """
     from scipy.optimize import least_squares
 
-    strikes = np.asarray(strikes, dtype=float)
-    market_ivs = np.asarray(market_ivs, dtype=float)
+    strikes, market_ivs = _clean_slice_quotes(
+        strikes, forward, expiry, market_ivs, caller="fit_svi"
+    )
     k = np.log(strikes / forward)                    # log-moneyness
     w_market = market_ivs ** 2 * expiry               # total variance
 
@@ -408,8 +545,9 @@ def fit_svi_quasi(
     """
     from scipy.optimize import minimize
 
-    strikes = np.asarray(strikes, dtype=float)
-    market_ivs = np.asarray(market_ivs, dtype=float)
+    strikes, market_ivs = _clean_slice_quotes(
+        strikes, forward, expiry, market_ivs, caller="fit_svi_quasi"
+    )
     k = np.log(strikes / forward)
     w = market_ivs ** 2 * expiry
 
@@ -468,6 +606,35 @@ def fit_svi_surface(
         raise ValueError(f"method must be 'trf' or 'quasi', got {method!r}")
     slice_fit = fit_svi if method == "trf" else fit_svi_quasi
 
+    # The three dicts must describe the same expiries.  Without this a missing
+    # forward surfaced as a bare ``KeyError: 0.5`` from deep inside the loop.
+    k_strikes = set(strikes_by_expiry)
+    k_fwd = set(forwards)
+    k_ivs = set(market_ivs_by_expiry)
+    if not (k_strikes == k_fwd == k_ivs):
+        raise ValueError(
+            "strikes_by_expiry, forwards and market_ivs_by_expiry must cover "
+            f"the same expiries. Missing forwards: {sorted(k_strikes - k_fwd)}; "
+            f"missing ivs: {sorted(k_strikes - k_ivs)}; "
+            f"extra: {sorted((k_fwd | k_ivs) - k_strikes)}."
+        )
+
+    # Expiries keyed as floats: flag pairs that are distinct keys but are
+    # almost certainly the same date computed two ways.  An exact collision
+    # (SPX vs SPXW on one date) cannot be seen from here -- the caller's dict
+    # has already collapsed it.
+    ordered = sorted(k_strikes)
+    for lo, hi in itertools.pairwise(ordered):
+        if hi - lo < 1e-9 * max(abs(hi), 1.0):
+            warnings.warn(
+                f"Expiries {lo!r} and {hi!r} differ by less than float noise; "
+                "they are probably the same date computed two ways. Expiries "
+                "keyed by float cannot distinguish two roots on one date -- "
+                "build one surface per root.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
     slices: dict[float, SVIParams] = {}
     for T in sorted(strikes_by_expiry.keys()):
         slices[T] = slice_fit(
@@ -519,7 +686,10 @@ def dupire_local_vol(
     t : float
         Time point.
     r, q : float
-        Risk-free rate and dividend yield.
+        Risk-free rate and dividend yield.  Used to carry the forward beyond
+        the quoted expiries, and to build one at all when the surface carries
+        no forward curve (which warns).  Inside the quoted range the curve
+        supplies the forward and these have no effect.
     dT : float
         Unused.  ∂w/∂T is now computed in closed form; the parameter is kept
         so existing callers keep working.
@@ -532,23 +702,32 @@ def dupire_local_vol(
     S_arr = np.asarray(S, dtype=float)
     t = max(t, 1e-8)  # avoid t = 0
 
-    # Forward at time t — use surface's forward curve if available
+    # Forward at t.  Inside the quoted range the curve is interpolated; outside
+    # it the forward is carried at r - q rather than held flat.  This is where
+    # r and q enter -- they do not appear elsewhere in the total-variance form
+    # of Dupire's formula.
     try:
-        F = surface._get_forward(t)
+        F = surface.forward_at(t, r, q)
     except (ValueError, KeyError):
-        F = float(S_arr.mean()) if S_arr.ndim > 0 else float(S_arr)
+        # No forward curve at all.  The mean of the evaluation grid is the only
+        # spot proxy available; carry it to t so the result is at least a
+        # forward.  This is a guess, so say so rather than failing silently.
+        spot_proxy = float(S_arr.mean()) if S_arr.ndim > 0 else float(S_arr)
+        F = spot_proxy * math.exp((r - q) * t)
+        warnings.warn(
+            "VolSurface has no forward curve; approximating the forward at "
+            f"t={t:g} as mean(S)*exp((r-q)t) = {F:.6g}. Local vol is only as "
+            "good as this guess -- pass forward_curve to VolSurface.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     k = np.log(S_arr / F)
 
-    # Find the SVI slice closest to t for analytical derivatives
-    exp_arr = surface._expiries
-    idx = int(np.searchsorted(exp_arr, t))
-    idx = max(0, min(idx, len(exp_arr) - 1))
-    T_near = exp_arr[idx]
-    svi_slice = surface._slices[T_near]
-
-    # w and its spatial derivatives (analytical from SVI), one pass
-    w, dw, d2w = svi_slice.w_dw_d2w(k)
+    # Total variance and its k-derivatives AT t, read from the interpolated
+    # surface.  Taking them from a single bracketing slice at that slice's own
+    # expiry left the denominator inconsistent with the numerator below.
+    w, dw, d2w = surface.w_dw_d2w_from_logm(k, t)
     w = np.maximum(w, 1e-12)
 
     # ∂w/∂T in closed form.  The interpolated surface is piecewise linear in

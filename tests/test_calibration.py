@@ -353,3 +353,196 @@ class TestSurfaceTimeInterpolation:
         s1 = SVIParams(a=0.03, b=0.10, rho=-0.2, m=0.0, sigma=0.10, expiry=0.25)
         s2 = SVIParams(a=0.05, b=0.12, rho=-0.15, m=0.0, sigma=0.12, expiry=1.0)
         return VolSurface({0.25: s1, 1.0: s2}, forward_curve={0.25: 100.0, 1.0: 100.0})
+
+
+# ---------------------------------------------------------------------------
+# Forward construction: r and q must actually do something
+# ---------------------------------------------------------------------------
+class TestForwardCarry:
+    """Regression: dupire_local_vol declared r and q and read neither, and
+    _get_forward flat-extrapolated outside the quoted range (with a 2y last
+    quote and 3% carry, T=5 returned the 2y forward, 106.18 vs 116.18)."""
+
+    @staticmethod
+    def _surface(r=0.03):
+        Ts = [0.1, 0.25, 0.5, 1.0, 2.0]
+        Ks = np.linspace(70.0, 130.0, 21)
+        fwd = {T: 100.0 * np.exp(r * T) for T in Ts}
+        ivs = {}
+        for T in Ts:
+            k = np.log(Ks / fwd[T])
+            ivs[T] = 0.20 + 0.10 * k * k - 0.05 * k + 0.01 * np.sqrt(T)
+        return fit_svi_surface({T: Ks for T in Ts}, fwd, ivs)
+
+    def test_forward_carries_beyond_the_quoted_range(self):
+        surf = self._surface(r=0.03)
+        for T in (3.0, 5.0, 10.0):
+            assert surf.forward_at(T, 0.03, 0.0) == pytest.approx(100.0 * np.exp(0.03 * T), rel=1e-12)
+            # the old flat behaviour is still available and is wrong out here
+            assert surf._get_forward(T) == pytest.approx(100.0 * np.exp(0.03 * 2.0), rel=1e-12)
+
+    def test_forward_unchanged_inside_the_quoted_range(self):
+        surf = self._surface()
+        for T in (0.1, 0.4, 1.0, 2.0):
+            assert surf.forward_at(T, 0.03, 0.0) == pytest.approx(surf._get_forward(T), rel=1e-12)
+
+    def test_rate_affects_local_vol_beyond_the_curve(self):
+        from optpricer.calibration import dupire_local_vol
+
+        surf = self._surface()
+        S = np.linspace(80.0, 120.0, 5)
+        lo = np.atleast_1d(dupire_local_vol(surf, S, 3.0, 0.03, 0.0))
+        hi = np.atleast_1d(dupire_local_vol(surf, S, 3.0, 0.09, 0.0))
+        assert np.max(np.abs(lo - hi)) > 1e-4, "r must reach the forward outside the curve"
+
+    def test_rate_does_not_affect_local_vol_inside_the_curve(self):
+        from optpricer.calibration import dupire_local_vol
+
+        surf = self._surface()
+        S = np.linspace(80.0, 120.0, 5)
+        a = np.atleast_1d(dupire_local_vol(surf, S, 0.4, 0.03, 0.0))
+        b = np.atleast_1d(dupire_local_vol(surf, S, 0.4, 9.00, 0.0))
+        assert np.allclose(a, b, rtol=0, atol=0), "inside the curve the forward comes from the curve"
+
+    def test_missing_forward_curve_warns_instead_of_guessing_silently(self):
+        from optpricer.calibration import dupire_local_vol
+
+        bare = VolSurface(self._surface().slices)
+        with pytest.warns(RuntimeWarning, match="no forward curve"):
+            dupire_local_vol(bare, np.linspace(80.0, 120.0, 5), 0.4, 0.03, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Dupire denominator must be read from the surface at t
+# ---------------------------------------------------------------------------
+class TestSpatialDerivativesAtT:
+    """Regression: the denominator took w, dw/dk, d2w/dk2 from one bracketing
+    slice at that slice's own expiry while the numerator used the interpolated
+    surface, so the two disagreed (w inflated 1.68x at t=0.15)."""
+
+    def _surf(self):
+        return TestForwardCarry._surface()
+
+    @pytest.mark.parametrize("T", [0.05, 0.1, 0.175, 0.25, 0.4, 1.0, 1.5, 2.0, 3.0])
+    def test_w_matches_the_surface_exactly(self, T):
+        surf = self._surf()
+        k = np.linspace(-0.5, 0.5, 51)
+        w, _, _ = surf.w_dw_d2w_from_logm(k, T)
+        assert np.allclose(w, surf.total_var_from_logm(k, T), rtol=0, atol=0)
+
+    @pytest.mark.parametrize("T", [0.175, 0.4, 1.5, 3.0])
+    def test_k_derivatives_match_finite_differences(self, T):
+        surf = self._surf()
+        k = np.linspace(-0.4, 0.4, 81)
+        h = 1e-5
+        _, dw, d2w = surf.w_dw_d2w_from_logm(k, T)
+        up = surf.total_var_from_logm(k + h, T)
+        dn = surf.total_var_from_logm(k - h, T)
+        mid = surf.total_var_from_logm(k, T)
+        assert np.allclose(dw, (up - dn) / (2 * h), rtol=1e-6, atol=1e-9)
+        assert np.allclose(d2w, (up - 2 * mid + dn) / h ** 2, rtol=1e-3, atol=1e-5)
+
+    def test_at_a_quoted_expiry_it_is_the_slice_itself(self):
+        surf = self._surf()
+        k = np.linspace(-0.4, 0.4, 41)
+        for T in (0.25, 1.0):
+            got = surf.w_dw_d2w_from_logm(k, T)
+            ref = surf.slices[T].w_dw_d2w(k)
+            for g, r_ in zip(got, ref):
+                assert np.allclose(g, r_, rtol=1e-12, atol=1e-15)
+
+    def test_local_vol_unchanged_at_quoted_expiries(self):
+        """The old slice pick happened to be right exactly on a quoted expiry,
+        so those values must not move; only interpolated ones should."""
+        from optpricer.calibration import dupire_local_vol
+
+        surf = self._surf()
+        S = np.linspace(80.0, 120.0, 9)
+        for T in (0.25, 1.0):
+            v = np.atleast_1d(dupire_local_vol(surf, S, T, 0.03, 0.0))
+            assert np.all(np.isfinite(v)) and np.all(v > 0.01)
+
+
+# ---------------------------------------------------------------------------
+# Calibration input validation
+# ---------------------------------------------------------------------------
+class TestCalibrationInputValidation:
+    """Regression: one NaN implied vol made fit_svi_quasi return
+    SVIParams(a=nan, b=nan, ...) silently, and made fit_svi raise an unrelated
+    'Initial guess is outside of provided bounds'."""
+
+    @staticmethod
+    def _slice():
+        K = np.linspace(70.0, 130.0, 21)
+        F = 100.0 * np.exp(0.03)
+        return K, F, 1.0, 0.20 + 0.10 * np.log(K / F) ** 2 - 0.05 * np.log(K / F)
+
+    @pytest.mark.parametrize("fitter", [fit_svi, fit_svi_quasi])
+    def test_bad_quotes_are_dropped_not_propagated(self, fitter):
+        K, F, T, ivs = self._slice()
+        dirty = ivs.copy()
+        dirty[3] = np.nan
+        dirty[7] = 0.0
+        dirty[11] = -1.0
+        with pytest.warns(RuntimeWarning, match="dropping 3 of 21"):
+            p = fitter(K, F, T, dirty)
+        for v in (p.a, p.b, p.rho, p.m, p.sigma):
+            assert np.isfinite(v)
+
+    @pytest.mark.parametrize("fitter", [fit_svi, fit_svi_quasi])
+    def test_underdetermined_fit_raises(self, fitter):
+        K, F, T, ivs = self._slice()
+        with pytest.raises(ValueError, match="underdetermined"):
+            fitter(K[:4], F, T, ivs[:4])
+
+    @pytest.mark.parametrize("fitter", [fit_svi, fit_svi_quasi])
+    def test_bad_scalars_raise(self, fitter):
+        K, F, T, ivs = self._slice()
+        with pytest.raises(ValueError, match="forward"):
+            fitter(K, -1.0, T, ivs)
+        with pytest.raises(ValueError, match="expiry"):
+            fitter(K, F, 0.0, ivs)
+
+    @pytest.mark.parametrize("fitter", [fit_svi, fit_svi_quasi])
+    def test_length_mismatch_raises(self, fitter):
+        K, F, T, ivs = self._slice()
+        with pytest.raises(ValueError, match="same length"):
+            fitter(K, F, T, ivs[:-1])
+
+
+# ---------------------------------------------------------------------------
+# Expiry keys
+# ---------------------------------------------------------------------------
+class TestExpiryKeys:
+    """Two roots expiring on one date (SPX and SPXW) map to the same float key.
+    That collapse happens in the caller's dict, so the library cannot see it —
+    these are the guards that ARE possible."""
+
+    @staticmethod
+    def _slice():
+        K = np.linspace(70.0, 130.0, 21)
+        F = 100.0 * np.exp(0.03)
+        return K, F, 0.20 + 0.10 * np.log(K / F) ** 2 - 0.05 * np.log(K / F)
+
+    def test_mismatched_dicts_raise_a_clear_error(self):
+        K, F, ivs = self._slice()
+        with pytest.raises(ValueError, match="same expiries"):
+            fit_svi_surface({0.5: K}, {1.0: F}, {0.5: ivs})
+
+    def test_near_duplicate_expiries_warn(self):
+        K, F, ivs = self._slice()
+        T1, T2 = 1.0, 1.0 + 1e-13
+        with pytest.warns(RuntimeWarning, match="float noise"):
+            fit_svi_surface({T1: K, T2: K}, {T1: F, T2: F}, {T1: ivs, T2: ivs})
+
+    def test_non_positive_expiry_rejected(self):
+        p = SVIParams(a=0.04, b=0.1, rho=0.0, m=0.0, sigma=0.1, expiry=1.0)
+        with pytest.raises(ValueError, match="finite and positive"):
+            VolSurface({0.0: p})
+        with pytest.raises(ValueError, match="finite and positive"):
+            VolSurface({-1.0: p})
+
+    def test_label_distinguishes_two_roots(self):
+        p = SVIParams(a=0.04, b=0.1, rho=0.0, m=0.0, sigma=0.1, expiry=1.0)
+        assert VolSurface({1.0: p}).label is None
+        assert VolSurface({1.0: p}, label="SPXW").label == "SPXW"
