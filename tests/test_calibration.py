@@ -1,4 +1,5 @@
 """Tests for SVI calibration and VolSurface."""
+import warnings
 
 import numpy as np
 import pytest
@@ -600,3 +601,79 @@ class TestExpiryKeys:
         p = SVIParams(a=0.04, b=0.1, rho=0.0, m=0.0, sigma=0.1, expiry=1.0)
         assert VolSurface({1.0: p}).label is None
         assert VolSurface({1.0: p}, label="SPXW").label == "SPXW"
+
+
+# ---------------------------------------------------------------------------
+# Clamp consistency between the surface value and its k-derivatives
+# ---------------------------------------------------------------------------
+class TestClampConsistency:
+    """Regression: w_dw_d2w_from_logm returned the raw blend on its
+    interpolation branch while total_var_from_logm clamped at zero, so on a
+    surface whose interpolated total variance goes negative the two disagreed
+    (-0.0267 vs 0.0). dupire_local_vol then floored w at 1e-12 but left dw
+    live, so (k/w)*dw blew up to 2.8e+05 and sigma_loc was silently pinned at
+    the 0.01 floor on 6 of 7 nodes."""
+
+    @staticmethod
+    def _degenerate():
+        """Two slices whose linear blend in total variance dips below zero."""
+        lo = SVIParams(a=-0.05, b=1e-6, rho=0.0, m=0.0, sigma=0.1, expiry=0.5)
+        hi = SVIParams(a=0.30, b=1e-6, rho=0.0, m=0.0, sigma=0.1, expiry=2.0)
+        return VolSurface({0.5: lo, 2.0: hi},
+                          forward_curve={0.5: 100.0, 2.0: 100.0})
+
+    @pytest.mark.parametrize("T", [0.55, 0.6, 0.7, 0.8, 1.0, 1.5])
+    def test_value_and_derivatives_describe_one_surface(self, T):
+        surf = self._degenerate()
+        k = np.linspace(-0.3, 0.3, 13)
+        w, _, _ = surf.w_dw_d2w_from_logm(k, T)
+        assert np.array_equal(w, surf.total_var_from_logm(k, T))
+        assert np.all(w >= 0.0)
+
+    def test_derivatives_vanish_where_the_surface_is_clamped(self):
+        """max(blend, 0) is flat where the blend is negative, so both
+        derivatives are zero there -- not merely small."""
+        surf = self._degenerate()
+        k = np.linspace(-0.3, 0.3, 13)
+        w, dw, d2w = surf.w_dw_d2w_from_logm(k, 0.6)
+        clamped = w <= 0.0
+        assert clamped.any(), "fixture must exercise the clamp"
+        assert np.all(dw[clamped] == 0.0)
+        assert np.all(d2w[clamped] == 0.0)
+
+    def test_no_blow_up_in_the_dupire_denominator(self):
+        surf = self._degenerate()
+        k = np.linspace(-0.3, 0.3, 13)
+        w, dw, _ = surf.w_dw_d2w_from_logm(k, 0.6)
+        assert np.max(np.abs((k / np.maximum(w, 1e-12)) * dw)) < 1e3
+
+    def test_degenerate_surface_warns_rather_than_silently_flooring(self):
+        from optpricer.calibration import dupire_local_vol
+
+        surf = self._degenerate()
+        with pytest.warns(RuntimeWarning, match="non-positive total variance"):
+            dupire_local_vol(surf, np.linspace(80.0, 120.0, 7), 0.6, 0.03, 0.0)
+
+    def test_warning_text_is_constant_so_it_dedups(self):
+        """An earlier warning interpolated node values into the message, so the
+        duplicate filter could not collapse it and a 200-step solve emitted 200
+        warnings."""
+        from optpricer.calibration import dupire_local_vol
+
+        surf = self._degenerate()
+        S = np.linspace(80.0, 120.0, 7)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("default")
+            for _ in range(25):
+                dupire_local_vol(surf, S, 0.6, 0.03, 0.0)
+        assert len(caught) == 1, f"expected dedup to 1, got {len(caught)}"
+
+    def test_healthy_surface_is_untouched(self):
+        from optpricer.calibration import dupire_local_vol
+
+        surf = TestForwardCarry._surface()
+        S = np.linspace(80.0, 120.0, 9)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")          # any warning fails the test
+            v = np.atleast_1d(dupire_local_vol(surf, S, 0.4, 0.03, 0.0))
+        assert np.all(np.isfinite(v)) and np.all(v > 0.01)

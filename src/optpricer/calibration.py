@@ -213,29 +213,12 @@ class VolSurface:
         ``iv_from_logm`` returns ``sqrt(w / T)``; callers that immediately
         square it back (the Dupire dw/dT bump) should use this and skip the
         round trip.
+
+        Defined as the first element of :meth:`w_dw_d2w_from_logm` so the value
+        and its k-derivatives can never disagree about which surface they
+        describe -- consistency by construction rather than by inspection.
         """
-        k = np.asarray(k, dtype=float)
-
-        def _from_slice(sl):
-            # ``iv_from_logm`` divides by the *slice* expiry in these branches,
-            # and the caller multiplies by T, so carry that ratio through.
-            return np.maximum(sl.total_var(k), 0.0) * (T / sl.expiry)
-
-        if T in self._slices:
-            return _from_slice(self._slices[T])
-
-        idx = np.searchsorted(self._expiries, T)
-        if idx == 0:
-            return _from_slice(self._slices[self._expiries[0]])
-        if idx >= len(self._expiries):
-            return _from_slice(self._slices[self._expiries[-1]])
-
-        T_lo = self._expiries[idx - 1]
-        T_hi = self._expiries[idx]
-        w_lo = self._slices[T_lo].total_var(k)
-        w_hi = self._slices[T_hi].total_var(k)
-        alpha = (T - T_lo) / (T_hi - T_lo)
-        return np.maximum((1 - alpha) * w_lo + alpha * w_hi, 0.0)
+        return self.w_dw_d2w_from_logm(k, T)[0]
 
     def _w_slope_on_piece(self, k: np.ndarray, idx: int) -> np.ndarray:
         """Slope in T of the linear piece selected by ``idx``.
@@ -292,9 +275,18 @@ class VolSurface:
         alpha = (T - T_lo) / (T_hi - T_lo)
         w_lo, dw_lo, d2w_lo = self._slices[T_lo].w_dw_d2w(k)
         w_hi, dw_hi, d2w_hi = self._slices[T_hi].w_dw_d2w(k)
-        return ((1 - alpha) * w_lo + alpha * w_hi,
-                (1 - alpha) * dw_lo + alpha * dw_hi,
-                (1 - alpha) * d2w_lo + alpha * d2w_hi)
+        w = (1 - alpha) * w_lo + alpha * w_hi
+        dw = (1 - alpha) * dw_lo + alpha * dw_hi
+        d2w = (1 - alpha) * d2w_lo + alpha * d2w_hi
+        # The surface is max(blend, 0), so where the blend is negative the
+        # surface is flat at zero and both derivatives are zero.  Returning the
+        # raw blend here while total_var_from_logm clamped left w negative with
+        # a live dw, and (k/w)*dw then blew up (measured 2.8e+05) and silently
+        # floored sigma_loc at 0.01.
+        positive = w > 0.0
+        return (np.maximum(w, 0.0),
+                np.where(positive, dw, 0.0),
+                np.where(positive, d2w, 0.0))
 
     def dw_dT_from_logm(self, k: np.ndarray | float, T: float) -> np.ndarray:
         """∂w/∂T of the interpolated total-variance surface, in closed form.
@@ -731,6 +723,21 @@ def dupire_local_vol(
     # surface.  Taking them from a single bracketing slice at that slice's own
     # expiry left the denominator inconsistent with the numerator below.
     w, dw, d2w = surface.w_dw_d2w_from_logm(k, t)
+
+    # Non-positive total variance means the calibrated surface is degenerate
+    # here, not that local vol is small: the formula below divides by w.  The
+    # clamp keeps the engine running, but say so.  Message text is constant so
+    # Python's duplicate filter collapses it -- an earlier version interpolated
+    # the node values into the string and emitted one warning per time step.
+    if np.any(w <= 0.0):
+        warnings.warn(
+            "Dupire: the surface has non-positive total variance at some "
+            "evaluation nodes; local vol there is a floor, not a price. "
+            "The surface is arbitrage-violating or over-extrapolated in that "
+            "region.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     w = np.maximum(w, 1e-12)
 
     # ∂w/∂T in closed form.  The interpolated surface is piecewise linear in
