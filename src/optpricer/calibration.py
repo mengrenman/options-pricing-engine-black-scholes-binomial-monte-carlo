@@ -657,6 +657,7 @@ def dupire_local_vol(
     r: float,
     q: float,
     *,
+    spot: float | None = None,
     dT: float = 1e-4,
 ) -> float | np.ndarray:
     """Compute Dupire local volatility at ``(S, t)`` from a calibrated surface.
@@ -690,6 +691,10 @@ def dupire_local_vol(
         the quoted expiries, and to build one at all when the surface carries
         no forward curve (which warns).  Inside the quoted range the curve
         supplies the forward and these have no effect.
+    spot : float, optional
+        Underlying spot, used only when ``surface`` carries no forward curve;
+        the forward is then ``spot * exp((r-q) t)``.  With neither a curve nor
+        a spot the call raises, because no forward can be inferred.
     dT : float
         Unused.  ∂w/∂T is now computed in closed form; the parameter is kept
         so existing callers keep working.
@@ -706,20 +711,18 @@ def dupire_local_vol(
     # it the forward is carried at r - q rather than held flat.  This is where
     # r and q enter -- they do not appear elsewhere in the total-variance form
     # of Dupire's formula.
-    try:
+    if surface._forward_curve:
         F = surface.forward_at(t, r, q)
-    except (ValueError, KeyError):
-        # No forward curve at all.  The mean of the evaluation grid is the only
-        # spot proxy available; carry it to t so the result is at least a
-        # forward.  This is a guess, so say so rather than failing silently.
-        spot_proxy = float(S_arr.mean()) if S_arr.ndim > 0 else float(S_arr)
-        F = spot_proxy * math.exp((r - q) * t)
-        warnings.warn(
-            "VolSurface has no forward curve; approximating the forward at "
-            f"t={t:g} as mean(S)*exp((r-q)t) = {F:.6g}. Local vol is only as "
-            "good as this guess -- pass forward_curve to VolSurface.",
-            RuntimeWarning,
-            stacklevel=2,
+    elif spot is not None:
+        F = float(spot) * math.exp((r - q) * t)
+    else:
+        raise ValueError(
+            "Cannot locate the forward: the VolSurface carries no forward "
+            "curve and no spot was given. Pass spot=S0, or build the surface "
+            "with VolSurface(..., forward_curve={expiry: forward}). "
+            "Earlier versions guessed the forward as the mean of the "
+            "evaluation grid, which made local vol depend on the grid it was "
+            "asked about."
         )
 
     k = np.log(S_arr / F)
@@ -756,6 +759,8 @@ def dupire_local_vol_func(
     surface: VolSurface,
     r: float,
     q: float,
+    *,
+    spot: float | None = None,
 ) -> 'Callable[[np.ndarray, float], np.ndarray]':
     """Return a callable ``sigma_loc(S_array, t) -> sigma_array``.
 
@@ -771,13 +776,16 @@ def dupire_local_vol_func(
         Calibrated implied-vol surface.
     r, q : float
         Risk-free rate and dividend yield.
+    spot : float, optional
+        Forwarded to :func:`dupire_local_vol`; required when ``surface``
+        carries no forward curve.
 
     Returns
     -------
     callable
     """
     def _sigma_loc(S_arr: np.ndarray, t: float) -> np.ndarray:
-        result = dupire_local_vol(surface, S_arr, t, r, q)
+        result = dupire_local_vol(surface, S_arr, t, r, q, spot=spot)
         return np.asarray(result, dtype=float)
 
     return _sigma_loc

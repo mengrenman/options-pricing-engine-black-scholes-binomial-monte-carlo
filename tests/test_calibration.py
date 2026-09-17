@@ -404,12 +404,66 @@ class TestForwardCarry:
         b = np.atleast_1d(dupire_local_vol(surf, S, 0.4, 9.00, 0.0))
         assert np.allclose(a, b, rtol=0, atol=0), "inside the curve the forward comes from the curve"
 
-    def test_missing_forward_curve_warns_instead_of_guessing_silently(self):
+    def test_missing_forward_curve_raises_instead_of_guessing(self):
+        """No curve and no spot means no forward, so refuse rather than guess.
+
+        The original code used mean(S) as the "forward", which made local vol
+        depend on which grid it happened to be asked about.
+        """
         from optpricer.calibration import dupire_local_vol
 
         bare = VolSurface(self._surface().slices)
-        with pytest.warns(RuntimeWarning, match="no forward curve"):
+        with pytest.raises(ValueError, match="no forward curve and no spot"):
             dupire_local_vol(bare, np.linspace(80.0, 120.0, 5), 0.4, 0.03, 0.0)
+
+    def test_spot_reproduces_the_forward_curve_answer(self):
+        """spot=S0 agrees with an explicit curve, exactly at the quoted nodes.
+
+        Between nodes the two differ at ~1e-6 and must: ``_get_forward`` blends
+        the quoted forwards *linearly* in T, while ``spot*exp((r-q)t)`` is
+        convex, so they can only coincide where the curve is pinned.
+        """
+        from optpricer.calibration import dupire_local_vol
+
+        r, q, S0 = 0.03, 0.0, 100.0
+        curved = self._surface(r=r)                       # forwards are S0*exp(rT)
+        bare = VolSurface(curved.slices)
+        S = np.linspace(80.0, 120.0, 9)
+
+        for t in (0.25, 1.0, 2.0):                        # quoted expiries
+            a = np.atleast_1d(dupire_local_vol(curved, S, t, r, q))
+            b = np.atleast_1d(dupire_local_vol(bare, S, t, r, q, spot=S0))
+            assert np.allclose(a, b, rtol=1e-12, atol=1e-14)
+
+        for t in (0.15, 0.4):                             # between nodes
+            a = np.atleast_1d(dupire_local_vol(curved, S, t, r, q))
+            b = np.atleast_1d(dupire_local_vol(bare, S, t, r, q, spot=S0))
+            assert np.allclose(a, b, rtol=1e-4, atol=0.0)
+            assert not np.array_equal(a, b)
+
+    def test_grid_independence(self):
+        """Local vol at one point must not depend on the grid around it.
+
+        The mean(S) fallback failed exactly this: the same (S, t) returned a
+        different number depending on which strikes were evaluated with it.
+        """
+        from optpricer.calibration import dupire_local_vol
+
+        surf = self._surface()
+        narrow = np.array([99.0, 100.0, 101.0])
+        wide = np.array([50.0, 100.0, 300.0])
+        a = np.atleast_1d(dupire_local_vol(surf, narrow, 0.4, 0.03, 0.0))[1]
+        b = np.atleast_1d(dupire_local_vol(surf, wide, 0.4, 0.03, 0.0))[1]
+        assert a == pytest.approx(b, rel=1e-12)
+
+    def test_callable_factory_forwards_spot(self):
+        from optpricer.calibration import dupire_local_vol_func
+
+        bare = VolSurface(self._surface().slices)
+        S = np.linspace(90.0, 110.0, 5)
+        with pytest.raises(ValueError, match="no forward curve and no spot"):
+            dupire_local_vol_func(bare, 0.03, 0.0)(S, 0.4)
+        assert np.all(np.isfinite(dupire_local_vol_func(bare, 0.03, 0.0, spot=100.0)(S, 0.4)))
 
 
 # ---------------------------------------------------------------------------
