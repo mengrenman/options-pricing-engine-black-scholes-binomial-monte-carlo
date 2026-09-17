@@ -4,12 +4,50 @@
 from __future__ import annotations
 
 import itertools
+import json
 import math
 import warnings
 
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# Serialisation constants
+# ---------------------------------------------------------------------------
+# The schema name and the version are SEPARATE fields on purpose.  Baking the
+# version into the name ("optpricer.volsurface/1") makes "this is not a surface
+# file" and "your optpricer is too old" indistinguishable to the reader.
+_SURFACE_SCHEMA = "optpricer.volsurface"
+_SURFACE_VERSION = 1
+
+_SVI_FIELDS = ("a", "b", "rho", "m", "sigma", "expiry")
+
+
+def _as_finite_float(value, what: str) -> float:
+    """Coerce to float and reject anything non-finite.
+
+    JSON has no NaN or infinity literal, so ``json.dumps`` emits bare ``NaN``
+    which other parsers reject, and a JSON number as ordinary as ``1e400``
+    parses to ``inf`` without ``parse_constant`` ever firing.  Every number
+    crossing the boundary goes through here in both directions.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
+        raise ValueError(  # noqa: TRY004 - one exception type for any bad payload
+            f"{what}: expected a number, got {type(value).__name__}"
+        )
+    out = float(value)
+    if not math.isfinite(out):
+        raise ValueError(f"{what}: must be finite, got {out!r}")
+    return out
+
+
+def _reject_json_constant(token: str):
+    raise ValueError(
+        f"Refusing to load {token!r}: NaN and Infinity are not JSON and a "
+        "surface containing them is not a surface."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +124,28 @@ class SVIParams:
         u = k - self.m
         return self.b * self.sigma ** 2 / (u * u + self.sigma ** 2) ** 1.5
 
+    # --- serialisation ----------------------------------------------------
+    def to_dict(self) -> dict:
+        """Plain-``dict`` form, JSON-ready. Raises if any parameter is not finite."""
+        return {f: _as_finite_float(getattr(self, f), f"SVIParams.{f}") for f in _SVI_FIELDS}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> SVIParams:
+        """Rebuild from :meth:`to_dict` output, rejecting anything unexpected."""
+        if not isinstance(data, dict):
+            raise ValueError(  # noqa: TRY004 - see _as_finite_float
+                f"SVI slice must be an object, got {type(data).__name__}"
+            )
+        missing = [f for f in _SVI_FIELDS if f not in data]
+        if missing:
+            raise ValueError(f"SVI slice is missing {missing}")
+        # Unknown fields are refused rather than ignored: a field this version
+        # does not understand may be the one that changes what the numbers mean.
+        unknown = sorted(set(data) - set(_SVI_FIELDS))
+        if unknown:
+            raise ValueError(f"SVI slice has unrecognised fields {unknown}")
+        return cls(**{f: _as_finite_float(data[f], f"SVIParams.{f}") for f in _SVI_FIELDS})
+
 
 # ---------------------------------------------------------------------------
 # VolSurface — plugs into MarketData.vol_surface
@@ -127,6 +187,16 @@ class VolSurface:
     ):
         if not slices:
             raise ValueError("At least one SVI slice is required.")
+        non_numeric = [T for T in slices
+                       if isinstance(T, bool)
+                       or not isinstance(T, (int, float, np.integer, np.floating))]
+        if non_numeric:
+            # json.loads hands back object keys as str, so this is the error a
+            # caller gets for feeding a JSON object straight in.
+            raise ValueError(
+                f"Expiries must be numbers, got {[type(T).__name__ for T in non_numeric]}. "
+                "If these came from JSON object keys, convert them to float first."
+            )
         bad = [T for T in slices if not np.isfinite(T) or T <= 0.0]
         if bad:
             raise ValueError(f"Expiries must be finite and positive; got {bad}.")
@@ -219,6 +289,143 @@ class VolSurface:
         describe -- consistency by construction rather than by inspection.
         """
         return self.w_dw_d2w_from_logm(k, T)[0]
+
+    # --- serialisation ----------------------------------------------------
+    def to_dict(self) -> dict:
+        """Plain-``dict`` form, JSON-ready.
+
+        Slices and the forward curve are LISTS, never objects keyed by expiry.
+        Float keys survive a string round trip exactly, so that is not the
+        reason: the reason is that ``json.loads`` silently keeps only the last
+        of two identical keys, and ``"0.25"``, ``"0.250"``, ``".25"`` and
+        ``"2.5e-1"`` all parse to the same float.  Both merges happen before
+        this class sees the payload and neither can be guarded against.  A JSON
+        array has no merge semantics, so duplicates survive to be rejected.
+
+        Each slice carries its expiry exactly once.  The key-plus-field shape
+        lets the two disagree, which is a wrong-number bug rather than a
+        cosmetic one: the exact-match branch of ``iv_from_logm`` divides by the
+        slice's own expiry while the interpolation branch scales by
+        ``T / slice.expiry``.
+
+        Raises
+        ------
+        ValueError
+            If any parameter is non-finite, or a slice's key disagrees with its
+            own ``expiry``.  A surface that cannot be written is one that should
+            not be trusted, so this refuses rather than emitting invalid JSON.
+        """
+        slices = []
+        for T, params in self._slices.items():
+            key = _as_finite_float(T, "expiry key")
+            record = params.to_dict()
+            if record["expiry"] != key:
+                raise ValueError(
+                    f"Slice keyed at expiry {key!r} carries expiry "
+                    f"{record['expiry']!r}; the two must agree."
+                )
+            slices.append(record)
+
+        return {
+            "schema": _SURFACE_SCHEMA,
+            "version": _SURFACE_VERSION,
+            "label": self.label,
+            "slices": slices,
+            "forward_curve": [
+                [_as_finite_float(T, "forward curve expiry"),
+                 _as_finite_float(F, "forward")]
+                for T, F in sorted(self._forward_curve.items())
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> VolSurface:
+        """Rebuild from :meth:`to_dict` output.
+
+        Goes through ``__init__``, so every construction-time check still
+        applies.  Unknown schema or version is refused rather than guessed at:
+        a future version may change what the numbers mean, and a surface that
+        prices wrongly is worse than one that will not load.
+        """
+        if not isinstance(data, dict):
+            raise ValueError(  # noqa: TRY004 - see _as_finite_float
+                f"Expected an object, got {type(data).__name__}"
+            )
+
+        schema = data.get("schema")
+        if schema != _SURFACE_SCHEMA:
+            raise ValueError(
+                f"Not a VolSurface payload: schema is {schema!r}, expected "
+                f"{_SURFACE_SCHEMA!r}."
+            )
+        version = data.get("version")
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise ValueError(  # noqa: TRY004 - one exception type for any bad payload
+                f"Schema version must be an integer, got {version!r}."
+            )
+        if version > _SURFACE_VERSION:
+            raise ValueError(
+                f"Payload is schema version {version}, this optpricer "
+                f"understands up to {_SURFACE_VERSION}. Upgrade optpricer."
+            )
+        if version < 1:
+            raise ValueError(f"Schema version must be >= 1, got {version}.")
+
+        unknown = sorted(set(data) - {"schema", "version", "label", "slices", "forward_curve"})
+        if unknown:
+            raise ValueError(f"Payload has unrecognised fields {unknown}")
+
+        raw_slices = data.get("slices")
+        if not isinstance(raw_slices, list) or not raw_slices:
+            raise ValueError("'slices' must be a non-empty list.")
+
+        slices: dict[float, SVIParams] = {}
+        for i, record in enumerate(raw_slices):
+            params = SVIParams.from_dict(record)
+            if params.expiry in slices:
+                raise ValueError(
+                    f"Duplicate expiry {params.expiry!r} at slices[{i}]; a list "
+                    "keeps duplicates that an object would have merged away."
+                )
+            slices[params.expiry] = params
+
+        raw_curve = data.get("forward_curve") or []
+        if not isinstance(raw_curve, list):
+            raise ValueError(  # noqa: TRY004 - one exception type for any bad payload
+                "'forward_curve' must be a list of [expiry, forward] pairs."
+            )
+        curve: dict[float, float] = {}
+        for i, pair in enumerate(raw_curve):
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                raise ValueError(f"forward_curve[{i}] must be a two-element [expiry, forward].")
+            T = _as_finite_float(pair[0], f"forward_curve[{i}] expiry")
+            if T in curve:
+                raise ValueError(f"Duplicate forward-curve expiry {T!r} at index {i}.")
+            curve[T] = _as_finite_float(pair[1], f"forward_curve[{i}] forward")
+
+        label = data.get("label")
+        if label is not None and not isinstance(label, str):
+            raise ValueError(
+                f"label must be a string or null, got {type(label).__name__}"
+            )
+
+        return cls(slices, forward_curve=curve or None, label=label)
+
+    def to_json(self, **kwargs) -> str:
+        """JSON text. ``allow_nan`` is forced off, so output is always valid JSON."""
+        kwargs.pop("allow_nan", None)
+        return json.dumps(self.to_dict(), allow_nan=False, **kwargs)
+
+    @classmethod
+    def from_json(cls, text: str) -> VolSurface:
+        """Parse :meth:`to_json` output.
+
+        ``parse_constant`` rejects the non-standard ``NaN`` / ``Infinity``
+        literals that other writers may emit; overflow to infinity from an
+        ordinary number like ``1e400`` slips past it and is caught by the
+        finiteness check on every value instead.
+        """
+        return cls.from_dict(json.loads(text, parse_constant=_reject_json_constant))
 
     def _w_slope_on_piece(self, k: np.ndarray, idx: int) -> np.ndarray:
         """Slope in T of the linear piece selected by ``idx``.
