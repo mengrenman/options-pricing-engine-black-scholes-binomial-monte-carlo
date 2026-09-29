@@ -78,7 +78,7 @@ FD_BASE_MULT = 4.0      # grid half-width in sigma*sqrt(T), before any widening
 FD_MARGIN = 3.0         # widened grids reach the strike or drift plus this many sigma*sqrt(T)
 FD_MAX_N_S = 800        # cap on the spatial intervals when the grid is widened
 AMERICAN_VEGA_BUMP = 0.01       # cap on the vega difference's half-width in volatility
-AMERICAN_VEGA_REL_BUMP = 0.02   # the half-width as a fraction of sigma, so low vols are not over-bumped
+AMERICAN_VEGA_REL_BUMP = 0.02   # half-width as a share of sigma, so low vols are not over-bumped
 AMERICAN_RHO_BUMP = 0.001       # central-difference half-width in the rate (absolute)
 FD_BUMP_N_T = 200               # time steps of the bumped solves behind the American vega and rho
 AMERICAN_MAX_TOTAL_VOL = 2.5    # above this the grid's own error puts American vega/rho past 1%
@@ -397,8 +397,9 @@ def _american_vega_rho(opt, kind: str, grid: dict) -> tuple[dict | None, str | N
     try:
         vega = (price(replace(opt, sigma=s + hs), mult * s / (s + hs))
                 - price(replace(opt, sigma=s - hs), mult * s / (s - hs))) / (2 * hs)
-        if (abs(r) * opt.T < AMERICAN_ZERO_RATE_BAND
-                and (total > AMERICAN_ZERO_RATE_MAX_TOTAL_VOL or s > AMERICAN_ZERO_RATE_MAX_SIGMA)):
+        high_vol = (total > AMERICAN_ZERO_RATE_MAX_TOTAL_VOL
+                    or s > AMERICAN_ZERO_RATE_MAX_SIGMA)
+        if abs(r) * opt.T < AMERICAN_ZERO_RATE_BAND and high_vol:
             note = ("Not computed: with the rate near zero and a volatility this high, the grid "
                     "prices a small spurious early-exercise premium whose slope in the rate is "
                     "several percent of rho.")
@@ -408,9 +409,9 @@ def _american_vega_rho(opt, kind: str, grid: dict) -> tuple[dict | None, str | N
             p1 = price(replace(opt, r=r + side * hr), mult)
             p2 = price(replace(opt, r=r + 2 * side * hr), mult)
             rho = side * (-3 * p0 + 4 * p1 - p2) / (2 * hr)
-            note = (f"One-sided slope, for {'r ≥ 0' if side > 0 else 'r ≤ 0'}: the rate is within "
-                    f"{hr:g} of zero, where early exercise switches on and the American price "
-                    "has a kink in the rate.")
+            which = "r ≥ 0" if side > 0 else "r ≤ 0"
+            note = (f"One-sided slope, for {which}: the rate is within {hr:g} of zero, where "
+                    "early exercise switches on and the American price has a kink in the rate.")
         else:
             rho = (price(replace(opt, r=r + hr), mult)
                    - price(replace(opt, r=r - hr), mult)) / (2 * hr)
