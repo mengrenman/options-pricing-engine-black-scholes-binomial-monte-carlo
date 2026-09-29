@@ -441,7 +441,8 @@ def price_all(S0, K, T, r, q, sigma, kind, mc_paths=DEFAULT_MC_PATHS, *,
 
     def premium(american, european):
         a, b = by_name[american]["price"], by_name[european]["price"]
-        return None if a is None or b is None else a - b
+        # rounded, with no -0.0, so a rounding-level difference does not show as "-0.0000"
+        return None if a is None or b is None else round(a - b, 6) + 0.0
 
     def grid_greeks(values):
         return {k: values[k] if values else None for k in ("delta", "gamma", "theta")}

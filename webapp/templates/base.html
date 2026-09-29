@@ -82,6 +82,7 @@
     .stack { display: block; font-size: 12px; line-height: 1.3; color: var(--muted); }
     p.caption { margin: 2px 0 0; font-size: 12px; line-height: 1.3; color: var(--muted); }
     p.iv-line { margin: 0 0 2px; font-size: 13px; line-height: 1.3; }
+    table.engines td.sub { min-width: 6em; }    /* five columns now; Method wraps before the table scrolls */
     table.greeks td[title], table.engines td.sub[title] { text-decoration: underline dotted var(--muted);
                                                           text-underline-offset: 3px; cursor: help; }
     #price-form select { font-size: 13px; padding-right: 2px; }
@@ -93,6 +94,7 @@
                 gap: 12px; font-size: 12px; color: var(--muted); }
     .scen-bar label { flex-direction: row; align-items: center; gap: 6px; }
     .scen-bar select { width: auto; font-size: 12px; padding: 2px 6px; }
+    .scen-bar span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .scen-view .view-body, .scen-chart, .scen-note { height: 292px; }
     .scen-note { display: flex; align-items: center; justify-content: center; text-align: center; margin: 0; }
     .error { background: var(--bad-bg); color: var(--bad); border-radius: 6px; padding: 10px 12px; }

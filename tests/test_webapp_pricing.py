@@ -170,6 +170,19 @@ class TestEnginesTable:
         assert line == f"Early-exercise premium: tree {p['tree']:.4f}, grid {p['grid']:.4f}"
         assert p["tree"] == pytest.approx(0.5193, abs=1e-3) and p["grid"] == pytest.approx(0.5154, abs=1e-3)
 
+    def test_rounding_level_premium_does_not_render_as_negative_zero(self, client, monkeypatch):
+        real = engine.fd_greeks
+
+        def nudged(opt, kind, **kw):
+            g = real(opt, kind, **kw)
+            if kw["american"]:
+                g["price"] -= 1e-9
+            return g
+
+        monkeypatch.setattr(engine, "fd_greeks", nudged)
+        frag = _price_fragment(client)
+        assert "grid 0.0000" in frag and "-0.0000" not in frag
+
     def test_no_dividend_call_has_no_premium(self):
         res = engine.price_all(*ARGS, "call")
         assert abs(res["early_exercise_premium"]["tree"]) < 1e-9
