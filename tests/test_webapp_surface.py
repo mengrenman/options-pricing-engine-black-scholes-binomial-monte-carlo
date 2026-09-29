@@ -40,6 +40,15 @@ def flat_surface(vol, spot=S0, r=R, q=Q, expiries=engine.SURFACE_EXPIRIES) -> Vo
     return VolSurface(slices, forward_curve=curve, label="flat")
 
 
+def term_surface(vol_at, spot=S0, r=R, q=Q, expiries=engine.SURFACE_EXPIRIES) -> VolSurface:
+    """No smile (b = 0), only a term structure: total variance vol_at(T)^2 T at every strike,
+    so local vol depends on time alone and the local-vol round trip is exact."""
+    slices = {T: SVIParams(a=vol_at(T) ** 2 * T, b=0.0, rho=0.0, m=0.0, sigma=0.1, expiry=T)
+              for T in expiries}
+    curve = {T: spot * math.exp((r - q) * T) for T in expiries}
+    return VolSurface(slices, forward_curve=curve, label="term")
+
+
 @pytest.fixture(scope="module")
 def client():
     return TestClient(app)
@@ -128,21 +137,23 @@ class TestDefaultSmile:
         assert float(surf.iv_from_logm(-0.3, 1.0)) == pytest.approx(
             float(want.iv_from_logm(-0.3, 1.0)), abs=1e-12)
 
-    @pytest.mark.parametrize("T,limit", [(1.0, 6.0), (2.0, 20.0)])
+    @pytest.mark.parametrize("T,limit", [(1.0, 4.0), (2.0, 16.0)])
     def test_default_surface_is_repriced_within_a_few_vol_bps(self, fitted, T, limit):
-        """Measured 4.1 and 16.4 vol bps at T = 1 and 2, in the left wing."""
+        """Measured 2.5 and 13.7 vol bps at T = 1 and 2, in the left wing (4.1 and 16.4
+        before the local vol was read at the middle of each time step)."""
         res = localvol.lv_smile(fitted["surface_json"], S0, T, R, Q)
         assert max(abs(d) for d in res["diff_bps"]) < limit
         assert res["clipped_share"] < 0.01
 
-    @pytest.mark.parametrize("T,at_least", [(1.0, 900.0), (2.0, 1200.0)])
-    def test_old_defaults_are_the_reason_they_changed(self, steep, T, at_least):
+    @pytest.mark.parametrize("T,at_least,share", [(1.0, 900.0, 0.01), (2.0, 1200.0, 0.10)])
+    def test_old_defaults_are_the_reason_they_changed(self, steep, T, at_least, share):
         """The steep surface has butterfly arbitrage in its extrapolated wing, so the
-        local-vol PDE reprices it up to 1,044 vol bps off at T = 1 and 1,416 at T = 2,
-        and a third of the grid holds a clamped local vol."""
+        local-vol PDE reprices it up to 1,046 vol bps off at T = 1 and 1,415 at T = 2, and
+        at T = 2 a fifth of the nodes within four ATM standard deviations of the forward
+        hold a clamped local vol."""
         res = localvol.lv_smile(steep["surface_json"], S0, T, R, Q)
         assert max(abs(d) for d in res["diff_bps"] if d is not None) > at_least
-        assert res["clipped_share"] > 0.2
+        assert res["clipped_share"] > share
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +169,14 @@ LV_ROUTES = [
 def _tampered(surface_dict, factor):
     out = json.loads(json.dumps(surface_dict))
     out["forward_curve"] = [[T, F * factor] for T, F in out["forward_curve"]]
+    return out
+
+
+def _tampered_at(surface_dict, expiry, factor):
+    """The surface with its forward at one quoted expiry multiplied by ``factor``."""
+    out = json.loads(json.dumps(surface_dict))
+    out["forward_curve"] = [[T, F * factor if T == expiry else F]
+                            for T, F in out["forward_curve"]]
     return out
 
 
@@ -220,6 +239,57 @@ class TestForwardConsistency:
         with pytest.raises(engine.InputError, match="forward"):
             engine.check_forward(bad, S0, 1.5, 0.5, 0.0)
 
+    @pytest.mark.parametrize("expiry,factor", [(0.5, 1e6), (0.5, 1.5), (0.25, 0.5), (0.1, 3.0)])
+    @pytest.mark.parametrize("ui,api", LV_ROUTES[1:])
+    def test_a_curve_edited_at_an_earlier_expiry_is_refused_by_the_pde_views(
+            self, client, fitted, ui, api, expiry, factor):
+        """The PDE reads the forward at every time step from 0 to T, so a forward edited at an
+        expiry before T matters even when the forward at T itself is untouched. Checking T
+        alone let this through: with the forward at 0.5 multiplied by 1e6 and T = 1, the
+        Dynamics view priced the put at 36.22 against Black-Scholes 8.61."""
+        surf = _tampered_at(fitted["surface"].to_dict(), expiry, factor)
+        assert VolSurface.from_dict(surf).forward_at(1.0, R, Q) == pytest.approx(
+            S0 * math.exp(R), rel=1e-9)                        # T = 1 is untouched
+        frag = client.post(ui, data=_form(json.dumps(surf), t="1.0")).text
+        assert 'role="alert"' in frag and f"forward at t={expiry:g}" in frag
+        resp = client.post(api, json={"surface": surf, "S0": 100, "t": 1.0, "r": R})
+        assert resp.status_code == 400 and "forward" in resp.json()["error"]
+
+    def test_only_the_expiries_the_pde_reads_are_checked(self, fitted):
+        """A time before the quoted expiry at or after T reads only the forward points up to
+        that expiry, so an edit beyond it changes nothing the view uses."""
+        surf = fitted["surface"].to_dict()
+        late = VolSurface.from_dict(_tampered_at(surf, 2.0, 5.0))
+        engine.check_forward(late, S0, 1.0, R, Q, through_expiry=True)
+        with pytest.raises(engine.InputError, match="forward at t=1.5"):
+            engine.check_forward(late, S0, 1.5, R, Q, through_expiry=True)   # 1.5 leans on 2.0
+        early = VolSurface.from_dict(_tampered_at(surf, 0.1, 2.0))
+        with pytest.raises(engine.InputError, match="forward at t=0.1 "):
+            engine.check_forward(early, S0, 0.25, R, Q, through_expiry=True)
+        engine.check_forward(early, S0, 0.25, R, Q)          # t alone is exact there: passes
+
+    def test_the_slice_view_reads_one_time_so_it_checks_one(self, client, fitted):
+        """Dupire's formula at time t reads only forward_at(t), so /ui/localvol keeps checking
+        that alone (and keeps extrapolating past the last expiry)."""
+        surf = _tampered_at(fitted["surface"].to_dict(), 0.5, 1e6)
+        frag = client.post("/ui/localvol", data=_form(json.dumps(surf), t="1.0")).text
+        assert 'role="alert"' not in frag
+        frag = client.post("/ui/localvol", data=_form(json.dumps(surf), t="0.5")).text
+        assert 'role="alert"' in frag
+
+    @pytest.mark.parametrize("r", [0.05, 0.30])
+    def test_the_extra_check_accepts_a_correct_surface_at_every_time(self, r):
+        s = _fit(r=r)["surface"]
+        for t in (0.05, 0.1, 0.3, 0.75, 1.0, 1.46, 1.9, 2.0):
+            engine.check_forward(s, S0, t, r, 0.0, through_expiry=True)
+
+    def test_the_tolerance_constant_sits_beside_the_check_not_in_the_limits_block(self):
+        """Phase 1 adds its own constants after MC_SEED; keeping this one away from them
+        keeps the two branches from conflicting when they are merged."""
+        src = pathlib.Path(engine.__file__).read_text()
+        assert src.index("FORWARD_TOLERANCE = 0.005") > src.index("def load_surface(")
+        assert src.index("FORWARD_TOLERANCE = 0.005") < src.index("def check_forward(")
+
     @pytest.mark.parametrize("ui,api", LV_ROUTES)
     def test_a_surface_with_no_forward_curve_is_an_input_error_not_a_crash(
             self, client, fitted, ui, api):
@@ -255,9 +325,10 @@ class TestForwardConsistency:
 # ---------------------------------------------------------------------------
 class TestMemo:
     def test_memoized_prices_equal_unmemoized_ones_exactly(self, fitted):
+        """Against the same function read at the same times: the memo changes nothing."""
         surf = fitted["surface"]
-        table = localvol.LocalVolTable(surf, R, Q)
-        plain = op.dupire_local_vol_func(surf, R, Q)
+        table = localvol.LocalVolTable(surf, R, Q, 1.0)
+        plain = localvol._mid_step(op.dupire_local_vol_func(surf, R, Q), 1.0)
         for K, kind in [(90.0, "put"), (100.0, "call"), (115.0, "call"), (100.0, "call")]:
             kw = {"N_S": 300, "N_t": 100, "ref_vol": 0.25, "S_max_mult": 4.0}
             assert (op.fd_price_local_vol(S0, K, 1.0, R, Q, table, kind, **kw)
@@ -265,7 +336,8 @@ class TestMemo:
 
     def test_the_memo_lives_in_the_request_never_in_module_state(self, fitted):
         surf = fitted["surface"]
-        a, b = localvol.LocalVolTable(surf, R, Q), localvol.LocalVolTable(surf, R, Q)
+        a = localvol.LocalVolTable(surf, R, Q, 1.0)
+        b = localvol.LocalVolTable(surf, R, Q, 1.0)
         S = np.linspace(50.0, 200.0, 301)
         a(S, 0.5)
         assert len(a._memo) == 1 and len(b._memo) == 0
@@ -275,17 +347,32 @@ class TestMemo:
         assert state == []                               # no cache, registry or counter
 
     def test_cached_arrays_are_read_only(self, fitted):
-        table = localvol.LocalVolTable(fitted["surface"], R, Q)
+        table = localvol.LocalVolTable(fitted["surface"], R, Q, 1.0)
         values = table(np.linspace(50.0, 200.0, 301), 0.5)
         with pytest.raises(ValueError):
             values[0] = 9.0
 
     def test_a_different_grid_is_never_handed_another_grids_values(self, fitted):
-        table = localvol.LocalVolTable(fitted["surface"], R, Q)
+        table = localvol.LocalVolTable(fitted["surface"], R, Q, 1.0)
         a = table(np.linspace(50.0, 200.0, 301), 0.5)
         b = table(np.linspace(60.0, 210.0, 301), 0.5)
         c = table(np.linspace(50.0, 200.0, 151), 0.5)
         assert not np.array_equal(a, b) and a.shape != c.shape
+
+    def test_local_vol_is_read_half_a_step_after_the_time_the_solver_asks_for(self, fitted):
+        """The solver asks for the step from t + dt back to t at t, the earlier end. Dupire's
+        formula is evaluated at t + dt / 2, and the memo is still keyed on the solver's t."""
+        surf, T = fitted["surface"], 1.0
+        table = localvol.LocalVolTable(surf, R, Q, T)
+        plain = op.dupire_local_vol_func(surf, R, Q)
+        S = np.linspace(60.0, 160.0, 201)
+        half = 0.5 * T / localvol.LV_N_T
+        assert half == 0.005
+        assert np.array_equal(table(S, 0.30), plain(S, 0.30 + half))
+        assert not np.array_equal(table(S, 0.30), plain(S, 0.30))
+        assert next(iter(table._memo))[0] == 0.30
+        shifted = localvol._ShiftedTable(surf, R, Q, T, S0, 0.8, 300, 3)
+        assert np.array_equal(shifted._at(0.30), plain(shifted.spots, 0.30 + half))
 
     def test_eleven_strikes_read_one_dupire_evaluation_per_time_step(self, fitted,
                                                                      monkeypatch):
@@ -307,12 +394,12 @@ class TestMemo:
 
     def test_clipped_nodes_are_counted_from_the_table(self, fitted, steep):
         """The library's warnings are de-duplicated per process, so they cannot be counted."""
-        ok = localvol.LocalVolTable(fitted["surface"], R, Q)
+        ok = localvol.LocalVolTable(fitted["surface"], R, Q, 1.0)
         S = np.exp(np.linspace(math.log(30.0), math.log(300.0), 301))
         ok(S, 0.5)
         clipped, total = ok.clipped()
         assert (clipped, total) == (0, 301)
-        bad = localvol.LocalVolTable(steep["surface"], R, Q)
+        bad = localvol.LocalVolTable(steep["surface"], R, Q, 1.0)
         bad(S, 1.0)
         clipped, total = bad.clipped()
         assert total == 301 and clipped > 0
@@ -321,12 +408,31 @@ class TestMemo:
                                     | (vals <= localvol.LOCAL_VOL_FLOOR * (1 + 1e-9)))
         assert clipped == at_bound
 
+    def test_only_the_nodes_in_the_window_are_counted(self, steep):
+        """The share is taken over a window of spots, so it does not depend on how far out a
+        particular view sizes its grid."""
+        table = localvol.LocalVolTable(steep["surface"], R, Q, 2.0)
+        S = np.exp(np.linspace(math.log(30.0), math.log(300.0), 301))
+        table(S, 1.0)
+        everything = table.clipped()
+        vals = table._memo[next(iter(table._memo))]
+        at_bound = ((vals >= localvol.LOCAL_VOL_CAP * (1 - 1e-9))
+                    | (vals <= localvol.LOCAL_VOL_FLOOR * (1 + 1e-9)))
+        clamped_spots = S[at_bound]
+        assert everything[0] == clamped_spots.size > 0
+        lo = float(clamped_spots.max()) * 1.01
+        assert table.clipped(lo, 300.0)[0] == 0            # a window above every clamped node
+        clipped, total = table.clipped(0.0, lo)
+        assert (clipped, total) == (everything[0], int(np.count_nonzero(S <= lo)))
+        assert table.clipped(1e5, 1e6) == (0, 0)            # a window with no nodes at all
+
     def test_strikes_snap_to_grid_nodes(self):
         dx = 0.01
         snapped = localvol._snap(S0, dx, [95.3, 100.0, 104.77, 131.9])
         nodes = np.log(snapped / S0) / dx
         assert np.allclose(nodes, np.round(nodes), atol=1e-9)
-        assert np.all(np.abs(np.log(snapped / np.array([95.3, 100.0, 104.77, 131.9]))) <= dx / 2 + 1e-12)
+        asked = np.array([95.3, 100.0, 104.77, 131.9])
+        assert np.all(np.abs(np.log(snapped / asked)) <= dx / 2 + 1e-12)
 
     def test_the_grid_widens_only_when_carry_pushes_a_strike_to_the_edge(self):
         vol = 0.2
@@ -357,6 +463,44 @@ class TestSmile:
         the edge of the 4-standard-deviation grid, and it repriced 2.9 vol bps low."""
         res = localvol.lv_smile(flat_surface(0.1).to_json(), S0, 2.0, 0.05, 0.0)
         assert max(abs(d) for d in res["diff_bps"]) < 1.0
+
+    @pytest.mark.parametrize("vol,T,r,q", [(0.8, 2.0, 0.05, 0.0), (0.4, 2.0, 0.0, 0.3),
+                                           (0.4, 0.1, 0.0, 0.3), (0.2, 1.0, 0.2, 0.02)])
+    def test_a_flat_surface_is_within_five_vol_bps_at_large_carry_or_vol(self, vol, T, r, q):
+        """The one-basis-point self-test holds at a 5% rate with no dividend and vol up to 40%.
+        Outside that, a 300 x 100 grid is off by 1 to 4 bps (measured up to 3.8), which is
+        discretization, not a bug: this is the README's scope for the claim."""
+        res = localvol.lv_smile(flat_surface(vol, r=r, q=q).to_json(), S0, T, r, q)
+        assert res["unpriced"] == 0
+        assert max(abs(d) for d in res["diff_bps"]) < 5.0
+
+    @pytest.mark.parametrize("slope,T", [(0.10, 2.0), (-0.10, 2.0), (0.10, 1.0), (0.05, 0.5)])
+    def test_a_surface_that_only_has_a_term_structure_is_repriced_within_a_vol_bp(self, slope,
+                                                                                  T):
+        """With no smile, local vol depends on time alone and the round trip is exact, so the
+        gap must vanish. The library's solver reads local vol at the earlier end of each time
+        step, which alone gave -7.1 and +9.6 vol bps at T = 2 for slopes of +0.10 and -0.10
+        (32 bps at +0.50); read at the middle of the step it is under half a bp."""
+        s = term_surface(lambda T_: 0.3 + slope * math.sqrt(T_))
+        res = localvol.lv_smile(s.to_json(), S0, T, R, Q)
+        assert res["unpriced"] == 0
+        assert max(abs(d) for d in res["diff_bps"]) < 1.0, res["diff_bps"]
+
+    def test_reading_local_vol_at_the_step_start_would_fail_the_term_structure_test(self):
+        """The check above has teeth: the same solve with the solver's own times leaves
+        several vol bps, so the mid-step shift is what removes them."""
+        s = term_surface(lambda T_: 0.3 + 0.10 * math.sqrt(T_))
+        f = op.dupire_local_vol_func(s, R, Q)
+        res = localvol.lv_smile(s.to_json(), S0, 2.0, R, Q)
+        K = res["strike"][5]
+        kind = res["kind"][5]
+        p = op.fd_price_local_vol(S0, K, 2.0, R, Q, f, kind, N_S=localvol.LV_N_S,
+                                  N_t=localvol.LV_N_T, ref_vol=res["grid_vol"],
+                                  S_max_mult=localvol.LV_S_MAX_MULT)
+        iv = localvol.implied_vol(S0, K, 2.0, R, Q, p, kind)
+        want = float(s.iv_from_logm(math.log(K / s.forward_at(2.0, R, Q)), 2.0))
+        assert abs(iv - want) * 1e4 > 5.0
+        assert abs(res["atm_gap_bps"]) < 1.0
 
     def test_eleven_out_of_the_money_strikes_around_the_forward(self, fitted):
         res = localvol.lv_smile(fitted["surface_json"], S0, 1.0, R, Q)
@@ -409,14 +553,49 @@ class TestSmile:
                                                                           fitted, steep):
         frag = client.post("/ui/lvsmile", data=_form(fitted["surface_json"], t="0.5")).text
         assert re.search(r'ATM gap [-+]\d+\.\d vol bps', frag)
-        assert re.search(r"0\.00% of grid nodes at floor or cap", frag)
+        assert re.search(r"0\.00% of nodes at floor or cap", frag)
         assert 'class="warn"' not in frag
-        few = client.post("/ui/lvsmile", data=_form(fitted["surface_json"], t="1.0")).text
-        assert "0.04% of grid nodes at floor or cap" in few and 'class="warn"' in few
-        bad = client.post("/ui/lvsmile", data=_form(steep["surface_json"])).text
-        share = float(re.search(r"([\d.]+)% of grid nodes at floor or cap", bad).group(1))
-        assert share > 20 and 'class="warn"' in bad
+        few = client.post("/ui/lvsmile", data=_form(fitted["surface_json"], t="2.0")).text
+        assert "0.03% of nodes at floor or cap" in few and 'class="warn"' in few
+        bad = client.post("/ui/lvsmile", data=_form(steep["surface_json"], t="2.0")).text
+        share = float(re.search(r"([\d.]+)% of nodes at floor or cap", bad).group(1))
+        assert share > 10 and 'class="warn"' in bad
         assert bad.count('role="status"') == 1            # one status line above the chart
+
+    @pytest.mark.parametrize("T", [0.5, 1.0, 2.0])
+    def test_both_tabs_report_the_same_share_of_clamped_nodes_for_one_surface(
+            self, fitted, steep, T):
+        """The count is taken over the same window of spots in both views, whatever size grid
+        each builds. Over the whole grid the old defaults read 31% on the smile tab and 8% on
+        the dynamics tab at T = 1."""
+        for s in (fitted, steep):
+            smile = localvol.lv_smile(s["surface_json"], S0, T, R, Q)
+            dyn = localvol.lv_dynamics(s["surface_json"], S0, None, T, R, Q)
+            assert smile["clip_range"] == dyn["clip_range"]
+            assert dyn["clipped_share"] == pytest.approx(smile["clipped_share"], abs=0.01)
+            assert smile["grid_nodes"] > 0 and dyn["grid_nodes"] > 0
+
+    def test_the_window_is_four_atm_standard_deviations_around_the_forward(self, fitted):
+        res = localvol.lv_smile(fitted["surface_json"], S0, 1.0, R, Q)
+        atm = float(fitted["surface"].iv_from_logm(0.0, 1.0))
+        half = 4.0 * atm
+        lo, hi = res["clip_range"]
+        assert lo == pytest.approx(res["forward"] * math.exp(-half), rel=1e-6)
+        assert hi == pytest.approx(res["forward"] * math.exp(half), rel=1e-6)
+
+    def test_the_status_tooltip_says_the_gap_includes_forward_interpolation_at_high_carry(
+            self, client):
+        """Between quoted expiries the surface's forward is interpolated linearly, above the
+        exponential the PDE grows spot at; the gap picks that mismatch up."""
+        s = _fit(r=0.3, atm_vol=0.4)
+        frag = client.post("/ui/lvsmile", data=_form(s["surface_json"], t="1.25",
+                                                     r="0.3")).text
+        res = localvol.lv_smile(s["surface_json"], S0, 1.25, 0.3, Q)
+        assert res["forward_gap"] == pytest.approx(0.0089, abs=0.0005)
+        assert "fit interpolates forwards linearly between quoted expiries" in frag
+        quiet = client.post("/ui/lvsmile", data=_form(_fit()["surface_json"], t="1.0")).text
+        assert "interpolates forwards" not in quiet
+        assert localvol.lv_smile(_fit()["surface_json"], S0, 1.0, R, Q)["forward_gap"] == 0.0
 
     def test_the_chart_has_the_line_the_dots_and_a_gap_strip_on_a_shared_axis(self, client,
                                                                               fitted):
@@ -545,18 +724,19 @@ class TestDynamics:
         T, ref = 1.0, 0.25
         half = 4.0 * ref * math.sqrt(T)
         dx = 2 * half / localvol.LV_N_S
-        table = localvol._ShiftedTable(surf, R, Q, S0, half, localvol.LV_N_S, 7)
-        plain = op.dupire_local_vol_func(surf, R, Q)
-        K = float(localvol._snap(S0, dx, [104.0])[0])
+        table = localvol._ShiftedTable(surf, R, Q, T, S0, half, localvol.LV_N_S, 7)
+        plain = localvol._mid_step(op.dupire_local_vol_func(surf, R, Q), T)
+        K = 104.0                            # between nodes: the strike need not sit on one
         for j in (-7, -1, 0, 1, 4, 7):
-            kw = {"N_S": localvol.LV_N_S, "N_t": localvol.LV_N_T, "ref_vol": ref, "S_max_mult": 4.0}
+            kw = {"N_S": localvol.LV_N_S, "N_t": localvol.LV_N_T, "ref_vol": ref,
+                  "S_max_mult": 4.0}
             a = op.fd_price_local_vol(S0 * math.exp(j * dx), K, T, R, Q, table.window(j),
                                       "call", **kw)
             b = op.fd_price_local_vol(S0 * math.exp(j * dx), K, T, R, Q, plain, "call", **kw)
             assert a == pytest.approx(b, abs=1e-8)
 
     def test_a_window_refuses_a_grid_that_does_not_line_up(self, fitted):
-        table = localvol._ShiftedTable(fitted["surface"], R, Q, S0, 1.0, 300, 3)
+        table = localvol._ShiftedTable(fitted["surface"], R, Q, 1.0, S0, 1.0, 300, 3)
         window = table.window(0)
         with pytest.raises(ValueError, match="line up"):
             window(np.linspace(50.0, 200.0, 301), 0.5)
@@ -586,15 +766,47 @@ class TestDynamics:
         assert localvol.default_strike(1000.0, 1.0, 0.05, 0.0) == 1050.0
         assert localvol.default_strike(0.5, 1.0, 0.05, 0.0) == 0.526
         res = localvol.lv_dynamics(fitted["surface_json"], S0, None, 0.5, R, Q)
-        assert res["strike_asked"] == 103.0
-        assert res["strike_asked"] == localvol.lv_dynamics(
-            fitted["surface_json"], S0, "  ", 0.5, R, Q)["strike_asked"]
+        assert res["strike"] == 103.0
+        assert res["strike"] == localvol.lv_dynamics(
+            fitted["surface_json"], S0, "  ", 0.5, R, Q)["strike"]
 
-    def test_the_strike_is_snapped_to_a_node_and_reported(self, fitted):
-        res = localvol.lv_dynamics(fitted["surface_json"], S0, "103", 0.5, R, Q)
-        assert res["strike_asked"] == 103.0
-        assert res["strike"] != 103.0
-        assert abs(math.log(res["strike"] / 103.0)) < res["node_pct"] / 100.0
+    def test_the_default_strike_never_leaves_the_strike_limits(self, fitted):
+        """A spot near its cap carried forward is above the 1e6 cap on strikes; the default
+        used to be refused for it, though the user never typed a strike."""
+        assert localvol.default_strike(1e6, 1.0, 0.05, 0.0) == localvol.MAX_STRIKE
+        assert localvol.default_strike(1e-4, 30.0, -0.5, 0.0) == engine.MIN_PRICE
+        assert localvol.default_strike(2e5, 1.0, 0.05, 0.0) == 210000.0    # untouched inside
+        big = _fit(spot=1e6)
+        for K in (None, ""):
+            res = localvol.lv_dynamics(big["surface_json"], 1e6, K, 1.0, R, Q)
+            assert res["strike"] == localvol.MAX_STRIKE
+            assert res["kind"] == "put" and _all_finite_or_none(res)
+
+    def test_the_strike_is_priced_as_typed_not_moved_to_a_node(self, fitted):
+        """The spots move by whole nodes, which keeps the strike's place among the nodes
+        whatever it is, so nothing is gained by moving it (and 105 read as 104.81)."""
+        for K in ("103", "105", "97.3"):
+            res = localvol.lv_dynamics(fitted["surface_json"], S0, K, 0.5, R, Q)
+            assert res["strike"] == float(K)
+            assert "strike_asked" not in res
+        res = localvol.lv_dynamics(fitted["surface_json"], S0, "105", 1.0, R, Q)
+        iv = float(fitted["surface"].iv_from_logm(math.log(105.0 / res["forward"]), 1.0))
+        assert res["iv_strike"] == pytest.approx(iv, abs=1e-5)       # the strike as typed
+        opt = op.OptionSpec(S0=S0, K=105.0, T=1.0, r=R, sigma=iv, q=Q)
+        assert res["rows"][0]["bs"] == pytest.approx(float(op.bs_price(opt, "put")), rel=1e-5)
+
+    @pytest.mark.parametrize("vol,T", [(0.2, 1.0), (0.4, 0.5), (0.1, 2.0)])
+    def test_an_unsnapped_strike_is_as_accurate_as_a_snapped_one_on_a_flat_surface(self, vol,
+                                                                                    T):
+        s = flat_surface(vol)
+        F = S0 * math.exp(R * T)
+        limit = min(0.5, 3 * vol * math.sqrt(T))
+        for frac in (-0.9, -0.37, 0.0, 0.41, 0.9):
+            res = localvol.lv_dynamics(s.to_json(), S0, F * math.exp(frac * limit), T, R, Q)
+            price, delta, gamma = res["rows"]
+            assert price["lv"] == pytest.approx(price["bs"], rel=1e-2, abs=1e-3)
+            assert delta["lv"] == pytest.approx(delta["bs"], abs=1e-4)
+            assert gamma["lv"] == pytest.approx(gamma["bs"], rel=5e-3)
 
     def test_strikes_outside_the_range_are_refused_with_the_range(self, fitted):
         with pytest.raises(engine.InputError, match=r"too far from the forward .* from "):
@@ -637,13 +849,69 @@ class TestDynamics:
         assert 'id="lv-dynamics-chart"' in frag
         assert "setTimeout(function" in frag and "}, 0);" in frag
         assert 'name: "Sticky strike (flat)"' in frag
+        assert 'name: "Local vol (sticky local vol)"' in frag     # the implied vol of its price
+        assert "Local-vol price" not in frag
+
+    def test_the_note_and_warning_are_one_short_line_each_so_the_page_does_not_grow(
+            self, client, steep):
+        """The 422 px column holds about 70 characters of 12 px text per line. The note was
+        two sentences that wrapped to three lines, and the clamped-node warning added more;
+        the page bottom is meant to stay under about 920 px. The long text is in tooltips."""
+        frag = client.post("/ui/lvdynamics", data=_form(steep["surface_json"], t="2.0")).text
+        notes = re.findall(r'<p class="note lv-note"[^>]*>([^<]*)</p>', frag)
+        warns = re.findall(r'<p class="warn"[^>]*>([^<]*)</p>', frag)
+        assert len(notes) == 1 and len(notes[0]) <= 62
+        assert len(warns) == 1 and len(warns[0]) <= 62 and "floor or cap" in warns[0]
+        assert frag.count("<p ") == 2
+
+    def test_the_header_says_european_and_shows_the_strike_as_typed(self, client, fitted):
+        frag = client.post("/ui/lvdynamics", data=_form(fitted["surface_json"], t="1.0",
+                                                        K="105")).text
+        head = re.search(r"<thead>.*?</thead>", frag, re.DOTALL).group(0)
+        assert ">European put, K 105</th>" in head
+        assert "OTM" not in re.sub(r'title="[^"]*"', "", head)      # only in the tooltip
+        assert "out of the money against the forward 105.13" in head
+        assert "(spot 100)" in head
+        call = client.post("/ui/lvdynamics", data=_form(fitted["surface_json"], t="1.0",
+                                                        K="112.5")).text
+        assert ">European call, K 112.5</th>" in call
+
+    def test_small_numbers_keep_their_significant_figures_in_the_table(self, client):
+        """Fixed four decimals printed gamma as 0.0000 at a spot of 50,000 (it is 1.9e-5), so
+        both models seemed to have none; the strike showed as 0.05 at a spot of 0.05."""
+        big = _fit(spot=50_000.0)
+        frag = client.post("/ui/lvdynamics",
+                           data=_form(big["surface_json"], S0="50000", t="1.0")).text
+        row = re.search(r'<th scope="row">Gamma</th><td class="num">([^<]*)</td>'
+                        r'<td class="num">([^<]*)</td>', frag)
+        assert row and all(float(v) > 0 for v in row.groups())
+        assert all(len(v.replace(".", "").lstrip("0")) == 4 for v in row.groups())
+        tiny = _fit(spot=0.05)
+        res = localvol.lv_dynamics(tiny["surface_json"], 0.05, None, 1.0, R, Q)
+        frag = client.post("/ui/lvdynamics",
+                           data=_form(tiny["surface_json"], S0="0.05", t="1.0")).text
+        assert f"K {localvol.sig(res['strike'], 5, True)}</th>" in frag
+        assert res["strike"] == 0.0526                     # 0.05 e^0.05, three figures
+
+    @pytest.mark.parametrize("x,digits,want", [
+        (8.60093, 4, "8.601"), (-0.492, 4, "-0.4920"), (1.9e-5, 4, "0.00001900"),
+        (2500.34, 4, "2500"), (104.81, 5, "104.81"), (0.0, 4, "0"), (None, 4, "n/a"),
+        (float("nan"), 4, "n/a")])
+    def test_sig_formats_to_significant_figures(self, x, digits, want):
+        assert localvol.sig(x, digits) == want
+
+    def test_sig_can_drop_trailing_zeros(self):
+        assert localvol.sig(105.0, 5, True) == "105"
+        assert localvol.sig(112.5, 5, True) == "112.5"
+        assert localvol.sig(1050000.0, 5, True) == "1050000"
+        assert localvol.sig(0.0525, 5, True) == "0.0525"
 
     def test_the_json_twin_takes_an_optional_strike(self, client, fitted):
         body = {"surface": fitted["surface"].to_dict(), "S0": 100, "t": 0.5, "r": R}
         default = client.post("/api/surface/lvdynamics", json=body).json()
-        assert default["strike_asked"] == 103.0
+        assert default["strike"] == 103.0
         given = client.post("/api/surface/lvdynamics", json={**body, "K": 95.0}).json()
-        assert given["strike_asked"] == 95.0 and given["kind"] == "put"
+        assert given["strike"] == 95.0 and given["kind"] == "put"
         assert _all_finite_or_none(default) and _all_finite_or_none(given)
         bad = client.post("/api/surface/lvdynamics", json={**body, "K": 900.0})
         assert bad.status_code == 400 and "too far" in bad.json()["error"]
@@ -674,9 +942,18 @@ class TestViewGroup:
         assert [v["label"] for v in LV_VIEW_LIST] == ["Local vol", "Repriced smile", "Dynamics"]
         assert [v["route"] for v in LV_VIEW_LIST] == ["/ui/localvol", "/ui/lvsmile",
                                                       "/ui/lvdynamics"]
-        # 74 + 106 + 71 px of 13 px uppercase text beside a 138 px time field in 422 px:
-        # keep the labels this short (the column CSS sets 12 px and 12 px gaps).
+        # Beside the 149 px time control in a 421.9 px column (font metrics, SF at weight 600,
+        # uppercase): 31 characters of tab label are 246 px at 11 px with 0.02em spacing and
+        # 12 px gaps, a 404 px row; the earlier 12 px / 0.03em was 427 px and wrapped.
         assert sum(len(v["label"]) for v in LV_VIEW_LIST) <= 31
+
+    def test_the_tab_row_is_set_small_enough_to_share_a_line_with_the_time_input(self):
+        css = pathlib.Path("webapp/templates/base.html").read_text()
+        rule = re.search(r"\.lv-col \.tabs \[role=\"tab\"\] \{([^}]*)\}", css).group(1)
+        assert "font-size: 11px" in rule and "letter-spacing: 0.02em" in rule
+        assert "white-space: nowrap" in rule
+        assert ".lv-col .bar { column-gap: 8px; }" in css
+        assert ".lv-col form.inline input { width: 5em; }" in css
 
     @pytest.mark.parametrize("key", [v["key"] for v in LV_VIEW_LIST])
     def test_every_key_renders_that_tab_selected_and_only_that_view_visible(self, client, key):
@@ -710,7 +987,9 @@ class TestViewGroup:
         for key in ("at-t", "smile"):
             assert "hx-target" not in parsed.views[key]["attrs"]
         strike = parsed.inputs["lv-strike"]
-        assert strike["form"] == "lv-form" and strike["name"] == "K" and strike["value"] == "103"
+        assert strike["form"] == "lv-form" and strike["name"] == "K"
+        assert strike["value"] == "" and strike["placeholder"] == "ATM forward"
+        assert "lv-k-auto" not in parsed.inputs         # nothing to keep in step with time
         assert parsed.body_children == 0               # the swap target starts empty
         view = re.search(r'data-view="dynamics".*?<div class="view-body"></div>\s*</div>',
                          frag, re.DOTALL).group(0)
@@ -719,27 +998,34 @@ class TestViewGroup:
     def test_the_strike_input_is_included_in_the_surface_form_so_it_survives_a_refit(
             self, client):
         page = client.get("/").text
-        assert re.search(r'hx-include="#lv-t, #lv-view, #lv-strike, #lv-k-auto"', page)
+        assert re.search(r'hx-include="#lv-t, #lv-view, #lv-strike"', page)
 
-    def test_an_edited_strike_survives_a_refit_and_the_default_follows_spot(self, client):
-        edited = client.post("/ui/surface", data={**SURFACE_FORM, "K": "95", "K_auto": "103"})
+    def test_a_typed_strike_survives_a_refit_and_an_empty_one_stays_empty(self, client):
+        """The field used to be prefilled with the ATM forward at the time in place when the
+        surface was fitted, so moving the Time input left it stale (103 after T went from 0.5
+        to 2, where the forward is 110.5) while reading as the default. Empty is the default
+        now, and the server works it out for each request, so it cannot go stale."""
+        edited = client.post("/ui/surface", data={**SURFACE_FORM, "K": " 95 "})
         assert _parse(edited.text).inputs["lv-strike"]["value"] == "95"
-        untouched = client.post("/ui/surface", data={**SURFACE_FORM, "S0": "150",
-                                                     "K": "103", "K_auto": "103"})
-        p = _parse(untouched.text)
-        assert p.inputs["lv-strike"]["value"] == "154"      # 150 e^0.025, three figures
-        assert p.inputs["lv-k-auto"]["value"] == "154"
-        blank = client.post("/ui/surface", data={**SURFACE_FORM, "t": "2", "K": ""})
-        assert _parse(blank.text).inputs["lv-strike"]["value"] == "111"   # 100 e^0.1
+        for t in ("0.5", "2", ""):
+            blank = client.post("/ui/surface", data={**SURFACE_FORM, "t": t, "K": ""})
+            assert _parse(blank.text).inputs["lv-strike"]["value"] == ""
+        assert 'name="K_auto"' not in client.post("/ui/surface", data=SURFACE_FORM).text
 
-    def test_strike_field_survives_junk(self):
-        assert localvol.strike_field("95", "103", "100", "0.05", "0", "0.5", 0.5) == ("95", "103")
-        assert localvol.strike_field("", "", "100", "0.05", "0", "0.5", 0.5) == ("103", "103")
-        assert localvol.strike_field("x", "x", "100", "0.05", "0", "0.5", 0.5) == ("103", "103")
-        assert localvol.strike_field("95", "103", "100", "0.05", "0", "junk", 0.5)[1] == "103"
-        assert localvol.strike_field("95", "103", "100", "0.05", "0", "-3", 0.5)[1] == "103"
-        assert localvol.strike_field("95", "103", "nan", "0.05", "0", "0.5", 0.5)[1] == ""
-        assert localvol.strike_field("95", "103", "100", "1e999", "0", "0.5", 0.5)[1] == ""
+    def test_a_junk_strike_is_echoed_safely_and_refused_by_the_view(self, client, fitted):
+        frag = client.post("/ui/surface", data={**SURFACE_FORM, "K": '"><script>x</script>'}).text
+        assert "<script>x</script>" not in frag
+        assert "&lt;script&gt;x" in frag
+        bad = client.post("/ui/lvdynamics", data=_form(fitted["surface_json"], K="abc")).text
+        assert 'role="alert"' in bad and "Strike must be a number" in bad
+
+    def test_an_empty_strike_follows_the_time_input(self, client, fitted):
+        """The default strike is the ATM forward at the request's time, whatever the field held
+        when the surface was fitted."""
+        for t, K in (("0.5", 103.0), ("1.0", 105.0), ("2.0", 111.0)):
+            res = client.post("/api/surface/lvdynamics", json={
+                "surface": fitted["surface"].to_dict(), "S0": 100, "t": float(t), "r": R}).json()
+            assert res["strike"] == K
 
     def test_the_time_input_and_the_view_choice_still_survive_a_refit(self, client):
         frag = client.post("/ui/surface", data={**SURFACE_FORM, "t": "1.25",
@@ -805,6 +1091,14 @@ class TestTotalVariance:
 class TestHazards:
     def test_no_global_warning_state_is_swapped(self):
         assert "catch_warnings(" not in inspect.getsource(localvol)
+
+    @pytest.mark.parametrize("path", ["webapp/localvol.py", "webapp/engine.py", "webapp/main.py",
+                                      "tests/test_webapp_surface.py"])
+    def test_lines_keep_to_the_projects_99_column_limit(self, path):
+        """pyproject sets line-length = 99; ruff's default rules do not enforce it."""
+        too_long = [n for n, line in enumerate(pathlib.Path(path).read_text().splitlines(), 1)
+                    if len(line) > 99]
+        assert too_long == []
 
     def test_the_new_routes_are_sync(self):
         paths = {"/ui/lvsmile", "/ui/lvdynamics", "/api/surface/lvsmile",

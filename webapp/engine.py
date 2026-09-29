@@ -66,8 +66,6 @@ SURFACE_LABEL = "web-synthetic"   # constant, so the library's warning logs once
 
 MC_SEED = 12345   # fixed, so the MC price moves smoothly as inputs change
 
-FORWARD_TOLERANCE = 0.005   # a surface's forward may differ from S0 e^{(r-q)t} by 0.5%
-
 
 class InputError(ValueError):
     """A request the app refuses to compute, with a message safe to show."""
@@ -299,7 +297,19 @@ def load_surface(surface_json: str) -> VolSurface:
         raise InputError(f"Invalid surface: {exc}") from exc
 
 
-def check_forward(surface: VolSurface, S0: float, t: float, r: float, q: float) -> float:
+FORWARD_TOLERANCE = 0.005   # a surface's forward may differ from S0 e^{(r-q)t} by 0.5%
+
+
+def _forward_refusal(F: float, carry: float, t: float) -> InputError:
+    return InputError(
+        f"The surface's forward at t={t:g} is {F:.6g}, but spot x e^((r - q) t) is "
+        f"{carry:.6g}. It was fitted at a different spot, rate or dividend yield, or "
+        "its forward curve was changed after fitting; refit it here."
+    )
+
+
+def check_forward(surface: VolSurface, S0: float, t: float, r: float, q: float,
+                  *, through_expiry: bool = False) -> float:
     """The surface's forward at ``t``, refused unless it agrees with ``S0 e^{(r-q)t}``.
 
     The surface JSON carries the forward it was fitted with, and Dupire local
@@ -316,12 +326,21 @@ def check_forward(surface: VolSurface, S0: float, t: float, r: float, q: float) 
     rate and 3.2% at the 50% rate cap; without the allowance a correctly fitted
     surface would be refused at a high rate.
 
+    A route that reads the forward at one time only, as the local-vol slice does, checks
+    ``t`` alone.  The PDE views read it at every time step from 0 to ``t``, so with
+    ``through_expiry`` every quoted forward up to the first quoted expiry at or after ``t``
+    is checked as well (all of them if ``t`` is past the last).  Those are the points the
+    forward at any earlier time is interpolated from.  A correct fit stores
+    ``S0 e^{(r-q)T}`` at each of them, so the plain 0.5% applies, with no interpolation
+    slack.  Without this a curve edited at an earlier expiry passed whenever ``t`` sat at
+    or beyond the next one.
+
     Raises InputError, including for a surface with no forward curve at all
     (``forward_at`` raises a bare ValueError there).
     """
     try:
         F = float(surface.forward_at(t, r, q))
-        curve = surface.to_dict()["forward_curve"]
+        curve = [(float(T), float(F_T)) for T, F_T in surface.to_dict()["forward_curve"]]
     except (ValueError, ArithmeticError) as exc:
         raise InputError(f"Invalid surface: {exc}") from exc
     carry = S0 * math.exp((r - q) * t)
@@ -332,11 +351,15 @@ def check_forward(surface: VolSurface, S0: float, t: float, r: float, q: float) 
         expected.append(float(np.interp(
             t, quoted, [S0 * math.exp((r - q) * T) for T in quoted])))
     if not math.isfinite(F) or min(abs(F / e - 1.0) for e in expected) > FORWARD_TOLERANCE:
-        raise InputError(
-            f"The surface's forward at t={t:g} is {F:.6g}, but spot x e^((r - q) t) is "
-            f"{carry:.6g}. It was fitted at a different spot, rate or dividend yield, or "
-            "its forward curve was changed after fitting; refit it here."
-        )
+        raise _forward_refusal(F, carry, t)
+    if through_expiry:
+        at_or_after = [T for T in quoted if T >= t]
+        horizon = min(at_or_after) if at_or_after else math.inf
+        for T, F_T in curve:
+            exact = S0 * math.exp((r - q) * T)
+            if T <= horizon and (not math.isfinite(F_T)
+                                 or abs(F_T / exact - 1.0) > FORWARD_TOLERANCE):
+                raise _forward_refusal(F_T, exact, T)
     return F
 
 

@@ -171,7 +171,7 @@ def ui_ladder(request: Request, S0: str = Form(""), K: str = Form(""), T: str = 
 def ui_surface(request: Request, S0: str = Form(""), r: str = Form(""), q: str = Form(""),
                atm_vol: str = Form(""), skew: str = Form(""), curvature: str = Form(""),
                term_slope: str = Form(""), t: str = Form(""), lv_view: str = Form(""),
-               K: str = Form(""), K_auto: str = Form("")):
+               K: str = Form("")):
     try:
         result = engine.fit_surface(S0, r, q, atm_vol, skew, curvature, term_slope)
     except engine.InputError as exc:
@@ -179,12 +179,12 @@ def ui_surface(request: Request, S0: str = Form(""), r: str = Form(""), q: str =
     # The local-vol form below the chart posts these back with the surface. Its
     # time input lives inside this fragment, so echo whatever the user had there
     # (sent via hx-include) rather than resetting it on every refit.
-    # The same goes for the local-vol view the user had selected, and for the dynamics
-    # view's strike unless the user never changed it from the default, which follows spot.
+    # The same goes for the local-vol view the user had selected, and for a strike typed into
+    # the dynamics view.  Left empty, that field means the ATM forward at the current time
+    # and spot, which the view works out on every request, so it never goes stale.
     view = lv_view if lv_view in LV_VIEWS else LV_VIEWS[0]
-    strike, strike_auto = localvol.strike_field(K, K_auto, S0, r, q, t, DEFAULTS["t"])
     ctx = {"res": result, "S0": S0, "r": r, "q": q, "t": t.strip() or DEFAULTS["t"],
-           "lv_view": view, "lv_views": LV_VIEW_LIST, "K": strike, "K_auto": strike_auto}
+           "lv_view": view, "lv_views": LV_VIEW_LIST, "K": K.strip()}
     return templates.TemplateResponse(request, "partials/surface.html", ctx)
 
 
@@ -215,7 +215,8 @@ def ui_lvdynamics(request: Request, surface: str = Form(""), S0: str = Form(""),
         result = localvol.lv_dynamics(surface, S0, K, t, r, q)
     except engine.InputError as exc:
         return _error(request, str(exc))
-    return templates.TemplateResponse(request, "partials/lvdynamics.html", {"res": result})
+    return templates.TemplateResponse(request, "partials/lvdynamics.html",
+                                      {"res": result, "sig": localvol.sig})
 
 
 # The JSON twins of the two views above.  Their request models are defined here, beside

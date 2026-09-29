@@ -22,7 +22,6 @@
         <input type="hidden" name="r" value="{{ r }}">
         <input type="hidden" name="q" value="{{ q }}">
         <input type="hidden" id="lv-view" name="lv_view" value="{{ lv_view }}" data-view-memo="lv">
-        <input type="hidden" id="lv-k-auto" name="K_auto" value="{{ K_auto }}">
         <label>Time (years) <input id="lv-t" name="t" value="{{ t }}" inputmode="decimal"></label>
       </form>
     </div>
@@ -36,7 +35,8 @@
          hx-indicator="#lv-spin" aria-live="polite">
       {% if v.strike %}
       <label class="lv-strike">Strike <input id="lv-strike" name="K" form="lv-form"
-        value="{{ K }}" inputmode="decimal" placeholder="ATM forward"></label>
+        value="{{ K }}" inputmode="decimal" placeholder="ATM forward"
+        title="Left empty, the strike is the at-the-money forward, rounded, at the Time shown."></label>
       <div class="view-body"></div>
       {% endif %}
     </div>

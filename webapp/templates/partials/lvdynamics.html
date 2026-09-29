@@ -1,17 +1,16 @@
-{% macro n(x) %}{% if x is none %}n/a{% else %}{{ "%.4f"|format(x) }}{% endif %}{% endmacro %}
 <div class="scroll">
   <table class="compact">
-    <thead><tr><th title="The strike is moved to the nearest node of the PDE grid: {{ res.strike_asked }} asked, {{ res.strike }} used. Black-Scholes uses the surface implied vol at the strike used, {{ "%.2f"|format(res.iv_strike * 100) }}%.">OTM {{ res.kind }}, K {{ "%.2f"|format(res.strike) }}</th>
+    <thead><tr><th title="European {{ res.kind }} struck at {{ sig(res.strike, 5, true) }}, out of the money against the forward {{ sig(res.forward, 5, true) }} (spot {{ sig(res.spot0, 5, true) }}). Black-Scholes uses the surface's implied vol at this strike, {{ "%.2f"|format(res.iv_strike * 100) }}%.">European {{ res.kind }}, K {{ sig(res.strike, 5, true) }}</th>
       <th class="num">Local vol</th><th class="num">Black-Scholes</th></tr></thead>
     <tbody>
-      {% for row in res.rows %}<tr><th scope="row">{{ row.name }}</th><td class="num">{{ n(row.lv) }}</td><td class="num">{{ n(row.bs) }}</td></tr>
+      {% for row in res.rows %}<tr><th scope="row">{{ row.name }}</th><td class="num">{{ sig(row.lv) }}</td><td class="num">{{ sig(row.bs) }}</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
-<p class="note lv-note">Local-vol delta is sticky-local-vol (the local-vol function stays fixed in absolute spot), so it differs from the sticky-strike Black-Scholes delta by design.</p>
-{% if res.clipped_nodes %}<p class="warn" role="status">{{ "%.2f"|format(res.clipped_share * 100) }}% of grid nodes sit at the local-vol floor or cap ({{ res.bounds[0] }}, {{ res.bounds[1] }}): bounds, not computed values.</p>{% endif %}
-{% if res.unpriced %}<p class="warn" role="status">{{ res.unpriced }} of {{ res.spot|length }} spots have no implied vol: the price falls outside the no-arbitrage bounds.</p>{% endif %}
+<p class="note lv-note" title="Local-vol delta is sticky-local-vol (the local-vol function stays fixed in absolute spot, so the smile does not move with spot), so it differs from the sticky-strike Black-Scholes delta (each strike keeps its implied vol) by design.">Sticky-local-vol delta differs from sticky-strike by design.</p>
+{% if res.clipped_nodes %}<p class="warn" role="status" title="Share of the PDE's local-vol nodes, over all time steps, between strikes {{ sig(res.clip_range[0], 4, true) }} and {{ sig(res.clip_range[1], 4, true) }} (four at-the-money standard deviations either side of the forward) that sit at a library bound ({{ res.bounds[0] }} or {{ res.bounds[1] }}): bounds, not computed values.">{{ "%.2f"|format(res.clipped_share * 100) }}% of nodes at floor or cap: not computed values.</p>{% endif %}
+{% if res.unpriced %}<p class="warn" role="status" title="The local-vol price falls outside the Black-Scholes no-arbitrage bounds, so it has no implied vol.">{{ res.unpriced }} of {{ res.spot|length }} spots have no implied vol.</p>{% endif %}
 <div id="lv-dynamics-chart" class="chart tall"></div>
 <script>
   // Drawn after a zero timeout: htmx runs this script before it removes the outgoing
@@ -26,8 +25,8 @@
     const grid = { gridcolor: line, zerolinecolor: line };
     const last = R.spot.length - 1;
     Plotly.newPlot("lv-dynamics-chart", [
-      { x: R.spot, y: R.iv_lv, customdata: R.spot_pct, name: "Local-vol price", mode: "lines+markers",
-        line: { color: accent, width: 2 }, marker: { size: 5 },
+      { x: R.spot, y: R.iv_lv, customdata: R.spot_pct, name: "Local vol (sticky local vol)",
+        mode: "lines+markers", line: { color: accent, width: 2 }, marker: { size: 5 },
         hovertemplate: "spot %{x:.2f} (%{customdata:+.1f}%)<br>implied vol %{y:.2%}<extra></extra>" },
       { x: [R.spot[0], R.spot[last]], y: [R.iv_strike, R.iv_strike], name: "Sticky strike (flat)",
         mode: "lines", line: { color: accent2, width: 2, dash: "dot" },
@@ -35,7 +34,7 @@
     ], plotLayout({
       margin: { l: 56, r: 12, t: 28, b: 44 },
       legend: { orientation: "h", x: 0, y: 1, yanchor: "bottom", font: { size: 11 } },
-      xaxis: Object.assign({ title: { text: "Spot, strike fixed at " + R.strike.toFixed(2),
+      xaxis: Object.assign({ title: { text: "Spot, strike fixed at " + Number(R.strike.toPrecision(5)),
                                       standoff: 4 } }, grid),
       yaxis: Object.assign({ title: { text: "Implied vol", standoff: 4 }, tickformat: ".1%",
                              automargin: true }, grid),

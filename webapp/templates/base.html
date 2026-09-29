@@ -75,10 +75,12 @@
     .bar .tabs { margin: 14px 0 6px; }
     /* The local-vol column is 422 px wide on a 1920 px screen and holds three tabs beside the
        time input on one row: tighter tabs, a shorter time field, and a busy mark that takes
-       no width (the bare "..." shows while a view computes). */
+       no width (the bare "..." shows while a view computes). From font metrics (uppercase,
+       weight 600), the row is 404 px at 11 px with 0.02em spacing and 427 px at 12 px with
+       0.03em, which wrapped; Arial Bold gives 400 and 424. */
     .lv-col .bar { column-gap: 8px; }
     .lv-col .tabs { position: relative; column-gap: 12px; }
-    .lv-col .tabs [role="tab"] { font-size: 12px; letter-spacing: 0.03em; white-space: nowrap; }
+    .lv-col .tabs [role="tab"] { font-size: 11px; letter-spacing: 0.02em; white-space: nowrap; }
     .lv-col .tabs .spin { position: absolute; left: 100%; margin-left: 0; }
     .lv-col form.inline input { width: 5em; }
     /* A view with its own input keeps it outside the swapped .view-body. Where a chart in
