@@ -306,16 +306,24 @@ def fd_greeks(
     kind: Literal["call", "put"] = CALL,
     **kwargs,
 ) -> dict[str, float]:
-    """Extract delta, gamma, and theta from the FD grid.
+    """Extract price, delta, gamma, and theta from one FD solve.
 
-    Delta and gamma are computed from the spatial derivatives at
-    ``x = ln(S0)`` via central differences.  Theta is the difference
-    between the first two time layers.
+    Delta and gamma are computed from the spatial derivatives at the grid
+    node nearest ``x = ln(S0)`` via central differences.  The grid is centered
+    on ``ln(S0)``, so an even ``N_S`` puts a node exactly there; with an odd
+    ``N_S`` the two middle nodes tie and the derivatives sit half a cell
+    (``dx / 2``) off center.  Theta is the difference between the first two
+    time layers.
+
+    Accepts the same keyword arguments as :func:`fd_price` (``N_S``, ``N_t``,
+    ``theta``, ``S_max_mult``, ``american``).
 
     Returns
     -------
     dict[str, float]
-        Keys: ``delta``, ``gamma``, ``theta``.
+        Keys: ``delta``, ``gamma``, ``theta`` and ``price``.  ``price`` is
+        the value :func:`fd_price` returns on the same grid, so one solve
+        gives the price and its Greeks.
     """
     N_S = kwargs.pop("N_S", 200)
     N_t = kwargs.pop("N_t", 200)
@@ -332,7 +340,10 @@ def fd_greeks(
     )
 
     x0 = np.log(opt.S0)
-    j = int(np.searchsorted(x_grid, x0))
+    # Nearest node.  np.searchsorted returns the first node at or above x0, which is
+    # one node too high whenever rounding leaves the center node a hair below x0:
+    # S0 = K = 10, sigma = 0.3, T = 5 gave a delta of 0.7771 against 0.7606 exact.
+    j = int(np.rint((x0 - x_grid[0]) / dx))
     j = max(1, min(j, len(x_grid) - 2))
 
     S0 = opt.S0
@@ -351,7 +362,8 @@ def fd_greeks(
     Vdt_val = float(np.interp(x0, x_grid, V_dt))
     theta_val = -(V0_val - Vdt_val) / dt
 
-    return {"delta": float(delta), "gamma": float(gamma), "theta": float(theta_val)}
+    return {"delta": float(delta), "gamma": float(gamma), "theta": float(theta_val),
+            "price": V0_val}
 
 
 def fd_price_local_vol(

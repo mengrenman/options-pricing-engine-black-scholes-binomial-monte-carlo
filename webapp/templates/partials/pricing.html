@@ -1,36 +1,48 @@
+{% macro money(v) %}{% if v is none %}–{% else %}{{ "%.4f"|format(v) }}{% endif %}{% endmacro %}
+{% macro greek(v, why) %}{% if v is none %}<span title="{{ why }}">–</span>{% else %}{{ "%.5f"|format(v) }}{% endif %}{% endmacro %}
+{% if res.implied_vol %}
+<p class="iv-line" title="The Black-Scholes (European) volatility that reproduces the market price; every engine, Greek and view below uses it.">Implied vol <strong>{{ "%.2f"|format(res.implied_vol.sigma * 100) }}%</strong> (vega {{ "%.1f"|format(res.implied_vol.vega) }}){% if res.implied_vol.weak %} <span class="warn" title="A tiny change in the market price moves the solved volatility a lot.">Low vega</span>{% endif %}</p>
+{% endif %}
 <div class="cols wide-first">
   <div>
     <h3>Engines</h3>
     <div class="scroll">
-      <table>
-        <thead><tr><th>Engine</th><th class="num">Price</th><th class="num">vs BS (bps)</th><th>Method</th></tr></thead>
+      <table class="engines">
+        <thead><tr><th>Engine</th><th class="num">Price</th><th class="num">vs BS (bps)</th><th class="num">American</th><th>Method</th></tr></thead>
         <tbody>
-        {% for e in res.engines %}
+        {% for row in res.rows %}
+          {% set e = row.main %}{% set am = row.american %}
           <tr>
-            <td>{{ e.name }}</td>
+            <td>{{ row.label }}</td>
             {% if e.price is none %}
             <td class="num">–</td><td class="num">–</td>
-            <td class="sub"><span class="warn">Unavailable: {{ e.unavailable }}</span></td>
             {% else %}
-            <td class="num">{{ "%.6f"|format(e.price) }}{% if e.stderr is defined %}<br><span class="sub">± {{ "%.6f"|format(e.stderr) }}</span>{% endif %}</td>
+            <td class="num">{{ "%.6f"|format(e.price) }}{% if e.stderr is defined %}<span class="stack">± {{ "%.6f"|format(e.stderr) }}</span>{% if e.z is not none %}<span class="stack{% if e.z|abs > 3 %} warn{% endif %}" title="(Monte Carlo − Black-Scholes) / standard error">z = {{ "%+.1f"|format(e.z) }}</span>{% endif %}{% endif %}</td>
             <td class="num">{% if e.diff_bps is none %}–{% else %}{{ "%+.1f"|format(e.diff_bps) }}{% endif %}</td>
-            <td class="sub">{{ e.note }}</td>
             {% endif %}
+            <td class="num">{% if am is none %}–{% elif am.price is none %}<span title="{{ am.unavailable }}">–</span>{% else %}{{ "%.6f"|format(am.price) }}{% endif %}</td>
+            <td class="sub"{% if e.detail %} title="{{ e.detail }}"{% endif %}>{% if e.price is none %}<span class="warn">Unavailable: {{ e.unavailable }}</span>{% else %}{{ e.note }}{% endif %}</td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
     </div>
+    <p class="caption">Early-exercise premium: tree {{ money(res.early_exercise_premium.tree) }}, grid {{ money(res.early_exercise_premium.grid) }}</p>
   </div>
   <div>
-    <h3>Black-Scholes Greeks</h3>
+    <h3>Greeks</h3>
     <div class="scroll">
-      <table>
-        <thead><tr><th>Greek</th><th class="num">Value</th><th>Units</th></tr></thead>
+      <table class="greeks">
+        <thead><tr><th>Greek</th><th class="num">Black-Scholes</th><th class="num">FD grid</th><th class="num">FD American</th></tr></thead>
         <tbody>
         {% for k, unit in [("delta", "per unit of spot"), ("gamma", "delta per unit of spot"),
                            ("vega", "per unit of vol"), ("theta", "per year"), ("rho", "per unit of rate")] %}
-          <tr><td>{{ k|capitalize }}</td><td class="num">{{ "%.5f"|format(res.greeks[k]) }}</td><td class="sub">{{ unit }}</td></tr>
+          <tr>
+            <td title="{{ unit }}">{{ k|capitalize }}</td>
+            <td class="num">{{ "%.5f"|format(res.greeks[k]) }}</td>
+            <td class="num">{{ greek(res.greeks_fd.european[k], "One solve gives delta, gamma and theta only; see the Black-Scholes column." if k in ("vega", "rho") else "The finite-difference solve is unavailable; see the Engines table.") }}</td>
+            <td class="num">{{ greek(res.greeks_fd.american[k], ("Not computed: " ~ res.american_vega_rho_unavailable) if k in ("vega", "rho") and res.american_vega_rho_unavailable else "The American finite-difference solve is unavailable; see the Engines table.") }}</td>
+          </tr>
         {% endfor %}
         </tbody>
       </table>
