@@ -73,8 +73,8 @@ A comprehensive options pricing library with **five independent pricing engines*
 - **Delta-hedge backtesting** — P&L simulation from hedging along GBM paths
 
 <p align="center">
-  <img src="docs/images/convergence-fdm-fem-tree.png" width="700" alt="Log-log plot of absolute pricing error against the Black-Scholes price for N from 25 to 800, for FDM, FEM and the CRR tree, with 1/N and 1/N-squared reference lines. At N = 800 the errors are about 9e-5 for FDM, 3e-5 for FEM and 2.5e-3 for the tree.">
-  <br><em>Error against the Black-Scholes price for an at-the-money one-year call (spot = strike = 100, r = 5%, σ = 20%) as the grid size or tree steps N grow from 25 to 800. From N = 50 on, FDM and FEM errors fall at second order and the CRR tree's at first order. The fitted orders in the legend include the N = 25 point. From <a href="notebooks/07_Risk_and_Validation.ipynb">notebook 07</a>.</em>
+  <img src="docs/images/convergence-fdm-fem-tree.png" width="700" alt="Log-log plot of absolute pricing error against the Black-Scholes price for N from 25 to 800, for FDM, FEM and the CRR tree, with 1/N and 1/N-squared reference lines. At N = 800 the errors are about 9e-5 for FDM, 3e-5 for FEM and 2.5e-3 for the tree. The legend gives orders fitted from N = 50: 2.00, 2.00 and 1.00.">
+  <br><em>Error against the Black-Scholes price for an at-the-money one-year call (spot = strike = 100, r = 5%, σ = 20%) as the grid size or tree steps N grow from 25 to 800. From N = 50 on, FDM and FEM errors fall at second order and the CRR tree's at first order, as the orders fitted in the legend show. From <a href="notebooks/07_Risk_and_Validation.ipynb">notebook 07</a>.</em>
 </p>
 
 <p align="center">
