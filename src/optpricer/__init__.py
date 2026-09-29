@@ -10,7 +10,7 @@ from .binomial import crr
 # Production data model
 from .core import Instrument, MarketData, to_instrument_market
 
-# Vectorised pricers
+# Vectorized pricers
 from .black_scholes_vec import bs_price_vec, bs_greeks_vec, bs_implied_vol_vec
 from .binomial import crr_vec
 
@@ -50,7 +50,7 @@ __all__ = [
     "euro_price_mc", "crr",
     # Production data model
     "Instrument", "MarketData", "to_instrument_market",
-    # Vectorised
+    # Vectorized
     "bs_price_vec", "bs_greeks_vec", "bs_implied_vol_vec", "crr_vec",
     # Exotics
     "barrier_price", "asian_price", "digital_price", "lookback_price",

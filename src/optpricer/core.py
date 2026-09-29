@@ -14,7 +14,7 @@ class OptionSpec:
     """Single-option container bundling instrument + market data.
 
     Fine for quick calculations; for production batch pricing prefer
-    the separated Instrument / MarketData types with vectorised pricers.
+    the separated Instrument / MarketData types with vectorized pricers.
     """
     S0: float
     K: float

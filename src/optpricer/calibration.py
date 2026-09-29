@@ -71,11 +71,11 @@ def _reject_json_constant(token: str):
 
 
 # ---------------------------------------------------------------------------
-# SVI raw parameterisation
+# SVI raw parameterization
 # ---------------------------------------------------------------------------
 @dataclass
 class SVIParams:
-    """Raw SVI parameterisation for a single expiry slice.
+    """Raw SVI parameterization for a single expiry slice.
 
     The total implied variance is:
         w(k) = a + b * (rho * (k - m) + sqrt((k - m)^2 + sigma^2))
@@ -627,7 +627,7 @@ def fit_svi(
     expiry : float
         Time to expiry in years.
     market_ivs : array-like, shape (N,)
-        Market implied volatilities (annualised).
+        Market implied volatilities (annualized).
     initial_guess : tuple, optional
         ``(a, b, rho, m, sigma)`` starting point for the solver.
     bounds : tuple, optional
@@ -754,7 +754,7 @@ def fit_svi_quasi(
     expiry : float
         Time to expiry in years.
     market_ivs : array-like, shape (N,)
-        Market implied volatilities (annualised).
+        Market implied volatilities (annualized).
 
     Returns
     -------

@@ -109,7 +109,7 @@ def convergence_analysis(
     *,
     reference: Optional[float] = None,
 ) -> dict:
-    """Analyse convergence of a numerical method as a parameter varies.
+    """Analyze convergence of a numerical method as a parameter varies.
 
     Parameters
     ----------
@@ -290,7 +290,7 @@ def backtest_delta_hedge(
         cash *= np.exp(opt.r * dt)
 
         if tau > 1e-10 and step % rebalance_freq == 0:
-            # Compute new delta -- vectorised across paths via BS vec
+            # Compute new delta -- vectorized across paths via BS vec
             from .black_scholes_vec import bs_greeks_vec
             greeks_now = bs_greeks_vec(S_t, opt.K, tau, opt.r, opt.q,
                                        opt.sigma, kind)

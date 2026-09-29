@@ -39,13 +39,13 @@ def crr(opt: OptionSpec, kind: Literal["call","put"]=CALL, N: int = 500, *, amer
 
 
 # ---------------------------------------------------------------------------
-# Vectorised CRR — prices a batch of options sharing the same tree params
+# Vectorized CRR — prices a batch of options sharing the same tree params
 # ---------------------------------------------------------------------------
 def crr_vec(
     S0: float, K, T: float, r: float, q: float, sigma: float,
     kind, N: int = 500, *, american: bool = False,
 ) -> np.ndarray:
-    """Vectorised CRR tree pricing over arrays of strikes and/or kinds.
+    """Vectorized CRR tree pricing over arrays of strikes and/or kinds.
 
     Builds **one** tree for (S0, T, r, q, sigma) and evaluates the payoff
     for every (K, kind) pair in a single backward pass.

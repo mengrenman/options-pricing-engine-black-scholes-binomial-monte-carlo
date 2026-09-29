@@ -274,7 +274,7 @@ def gbm_milstein_paths(
                   + ½ σ² S_n (Z² - 1) dt
 
     With constant σ this is algebraically equivalent to the exact
-    log-Euler discretisation (strong order 1.0), so this function
+    log-Euler discretization (strong order 1.0), so this function
     exists primarily for **demonstration and convergence testing**.
     """
     if n_steps <= 0 or n_paths <= 0:
