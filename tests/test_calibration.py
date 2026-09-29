@@ -681,9 +681,9 @@ class TestClampConsistency:
 
 
 # ---------------------------------------------------------------------------
-# Serialisation
+# Serialization
 # ---------------------------------------------------------------------------
-class TestSerialisation:
+class TestSerialization:
     @staticmethod
     def _surface(label="SPX"):
         Ts = [0.1, 0.25, 0.5, 1.0, 2.0]
@@ -774,7 +774,7 @@ class TestSerialisation:
             s.to_dict()
 
     # --- refusing bad payloads -------------------------------------------
-    def test_non_finite_never_serialises(self):
+    def test_non_finite_never_serializes(self):
         """Guard lives in to_dict, not only to_json, so json.dumps(s.to_dict())
         cannot write a file to_json would have refused."""
         s = VolSurface({1.0: SVIParams(a=np.nan, b=0.1, rho=0.0, m=0.0, sigma=0.1, expiry=1.0)})
@@ -823,9 +823,9 @@ class TestSerialisation:
         """A field this version does not understand may be the one that changes
         what the numbers mean."""
         d = self._surface().to_dict()
-        with pytest.raises(ValueError, match="unrecognised fields"):
+        with pytest.raises(ValueError, match="unrecognized fields"):
             VolSurface.from_dict({**d, "surprise": 1})
-        with pytest.raises(ValueError, match="unrecognised fields"):
+        with pytest.raises(ValueError, match="unrecognized fields"):
             VolSurface.from_dict({**d, "slices": [{**d["slices"][0], "extra": 1}]})
 
     @pytest.mark.parametrize("mutate,match", [

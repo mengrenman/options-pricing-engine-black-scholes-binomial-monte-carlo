@@ -14,7 +14,7 @@ from typing import Optional
 
 
 # ---------------------------------------------------------------------------
-# Serialisation constants
+# Serialization constants
 # ---------------------------------------------------------------------------
 # The schema name and the version are SEPARATE fields on purpose.  Baking the
 # version into the name ("optpricer.volsurface/1") makes "this is not a surface
@@ -124,7 +124,7 @@ class SVIParams:
         u = k - self.m
         return self.b * self.sigma ** 2 / (u * u + self.sigma ** 2) ** 1.5
 
-    # --- serialisation ----------------------------------------------------
+    # --- serialization ----------------------------------------------------
     def to_dict(self) -> dict:
         """Plain-``dict`` form, JSON-ready. Raises if any parameter is not finite."""
         return {f: _as_finite_float(getattr(self, f), f"SVIParams.{f}") for f in _SVI_FIELDS}
@@ -143,7 +143,7 @@ class SVIParams:
         # does not understand may be the one that changes what the numbers mean.
         unknown = sorted(set(data) - set(_SVI_FIELDS))
         if unknown:
-            raise ValueError(f"SVI slice has unrecognised fields {unknown}")
+            raise ValueError(f"SVI slice has unrecognized fields {unknown}")
         return cls(**{f: _as_finite_float(data[f], f"SVIParams.{f}") for f in _SVI_FIELDS})
 
 
@@ -290,7 +290,7 @@ class VolSurface:
         """
         return self.w_dw_d2w_from_logm(k, T)[0]
 
-    # --- serialisation ----------------------------------------------------
+    # --- serialization ----------------------------------------------------
     def to_dict(self) -> dict:
         """Plain-``dict`` form, JSON-ready.
 
@@ -373,7 +373,7 @@ class VolSurface:
 
         unknown = sorted(set(data) - {"schema", "version", "label", "slices", "forward_curve"})
         if unknown:
-            raise ValueError(f"Payload has unrecognised fields {unknown}")
+            raise ValueError(f"Payload has unrecognized fields {unknown}")
 
         raw_slices = data.get("slices")
         if not isinstance(raw_slices, list) or not raw_slices:
