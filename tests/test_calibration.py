@@ -849,3 +849,98 @@ class TestSerialization:
         src = pathlib.Path("src/optpricer")
         offenders = [p.name for p in src.glob("*.py") if "open(" in p.read_text()]
         assert not offenders, f"file I/O appeared in {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# Clipping is reported, not silent
+# ---------------------------------------------------------------------------
+class TestLocalVolClipWarning:
+    """Regression: dupire_local_vol clamped its output to [0.01, 5.0] with no
+    signal. On a surface with calendar arbitrage every node landed on the floor,
+    9 of 9, and a caller saw a plausible-looking flat 1% local vol."""
+
+    @staticmethod
+    def _calendar_arbitrage():
+        """Total variance FALLS from 0.10 to 0.05 between expiries."""
+        near = SVIParams(a=0.10, b=1e-6, rho=0.0, m=0.0, sigma=0.1, expiry=0.5)
+        far = SVIParams(a=0.05, b=1e-6, rho=0.0, m=0.0, sigma=0.1, expiry=1.0)
+        return VolSurface({0.5: near, 1.0: far}, forward_curve={0.5: 100.0, 1.0: 100.0})
+
+    @staticmethod
+    def _steep_extrapolated():
+        Ts = [0.1, 0.25, 0.5, 1.0, 2.0]
+        F = {T: 100.0 * np.exp(0.05 * T) for T in Ts}
+        K = {T: np.linspace(0.6 * F[T], 1.4 * F[T], 21) for T in Ts}
+        iv = {}
+        for T in Ts:
+            k = np.log(K[T] / F[T])
+            iv[T] = np.maximum(0.2 + 0.02 * np.sqrt(T) - 0.3 * k + 0.6 * k * k, 0.02)
+        return fit_svi_surface(K, F, iv, method="quasi")
+
+    def test_calendar_arbitrage_warns_at_the_floor(self):
+        from optpricer.calibration import (
+            LOCAL_VOL_FLOOR,
+            LocalVolClipWarning,
+            dupire_local_vol,
+        )
+
+        with pytest.warns(LocalVolClipWarning, match="calendar arbitrage"):
+            v = np.atleast_1d(dupire_local_vol(self._calendar_arbitrage(),
+                                               np.linspace(80.0, 120.0, 9), 0.75, 0.03, 0.0))
+        assert np.all(v == LOCAL_VOL_FLOOR), "every node sits on the floor"
+
+    def test_extrapolated_wing_warns_at_the_cap(self):
+        from optpricer.calibration import (
+            LOCAL_VOL_CAP,
+            LocalVolClipWarning,
+            dupire_local_vol,
+        )
+
+        with pytest.warns(LocalVolClipWarning):
+            v = np.atleast_1d(dupire_local_vol(self._steep_extrapolated(),
+                                               np.linspace(60.0, 140.0, 81), 3.0, 0.05, 0.0))
+        assert np.any(v == LOCAL_VOL_CAP)
+
+    def test_values_are_unchanged_only_reported(self):
+        """The fix adds a warning; it must not move a single number."""
+        from optpricer.calibration import LOCAL_VOL_CAP, LOCAL_VOL_FLOOR, dupire_local_vol
+
+        surf = self._steep_extrapolated()
+        S = np.linspace(60.0, 140.0, 81)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            v = np.atleast_1d(dupire_local_vol(surf, S, 3.0, 0.05, 0.0))
+        assert v.min() >= LOCAL_VOL_FLOOR and v.max() <= LOCAL_VOL_CAP
+
+    def test_is_a_runtime_warning_so_existing_filters_still_apply(self):
+        from optpricer.calibration import LocalVolClipWarning
+
+        assert issubclass(LocalVolClipWarning, RuntimeWarning)
+
+    def test_exported_at_package_level(self):
+        import optpricer
+
+        assert optpricer.LocalVolClipWarning.__name__ == "LocalVolClipWarning"
+
+    def test_constant_text_dedups_across_a_solve(self):
+        """A PDE solve calls dupire_local_vol once per time step. The warning
+        must collapse to one under the default filter, not one per step."""
+        from optpricer.calibration import LocalVolClipWarning, dupire_local_vol
+
+        surf = self._calendar_arbitrage()
+        S = np.linspace(80.0, 120.0, 9)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("default")
+            for t in np.linspace(0.55, 0.95, 40):          # 40 distinct time steps
+                dupire_local_vol(surf, S, float(t), 0.03, 0.0)
+        clip = [w for w in caught if issubclass(w.category, LocalVolClipWarning)]
+        assert len(clip) == 1, f"expected 1 after dedup, got {len(clip)}"
+
+    def test_healthy_surface_stays_silent(self):
+        from optpricer.calibration import dupire_local_vol
+
+        surf = TestForwardCarry._surface()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")                  # any warning fails
+            for t in (0.05, 0.4, 1.0, 1.9):
+                dupire_local_vol(surf, np.linspace(60.0, 160.0, 101), t, 0.03, 0.0)

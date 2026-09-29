@@ -299,7 +299,7 @@ optpricer mc --S0 100 --K 110 --T 1 --r 0.03 --sigma 0.20 --n-paths 200000 --see
 ```
 src/
   optpricer/
-    __init__.py           # public API (42 exports), version 0.3.0
+    __init__.py           # public API (43 exports), version 0.3.0
     core.py               # OptionSpec, CALL/PUT constants
     black_scholes.py      # BS price, Greeks, implied vol
     black_scholes_vec.py  # vectorised BS (batch across strikes/spots)

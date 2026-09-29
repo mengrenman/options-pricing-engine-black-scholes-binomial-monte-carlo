@@ -24,6 +24,21 @@ _SURFACE_VERSION = 1
 
 _SVI_FIELDS = ("a", "b", "rho", "m", "sigma", "expiry")
 
+# dupire_local_vol clamps its output to this range so a PDE or Monte Carlo
+# engine is never handed a zero, negative or runaway volatility.
+LOCAL_VOL_FLOOR = 0.01
+LOCAL_VOL_CAP = 5.0
+
+
+class LocalVolClipWarning(RuntimeWarning):
+    """Local vol reached :data:`LOCAL_VOL_FLOOR` or :data:`LOCAL_VOL_CAP`.
+
+    A subclass of ``RuntimeWarning``, so existing filters still catch it, but
+    distinct enough to filter on its own::
+
+        warnings.filterwarnings("error", category=LocalVolClipWarning)
+    """
+
 
 def _as_finite_float(value, what: str) -> float:
     """Coerce to float and reject anything non-finite.
@@ -901,7 +916,9 @@ def dupire_local_vol(
     Returns
     -------
     float or ndarray
-        Local volatility σ_loc(S, t).
+        Local volatility σ_loc(S, t), clamped to
+        ``[LOCAL_VOL_FLOOR, LOCAL_VOL_CAP]``.  Any node that needed clamping
+        raises :class:`LocalVolClipWarning`.
     """
     S_arr = np.asarray(S, dtype=float)
     t = max(t, 1e-8)  # avoid t = 0
@@ -962,7 +979,24 @@ def dupire_local_vol(
 
     sigma_loc_sq = numer / denom
     sigma_loc = np.sqrt(np.maximum(sigma_loc_sq, 0.0))
-    sigma_loc = np.clip(sigma_loc, 0.01, 5.0)
+
+    # Clamping keeps a downstream engine running, but a clamped value is a bound,
+    # not a local vol -- and the two floors above feed straight into it. Where the
+    # surface has calendar arbitrage (total variance falling with expiry) dwdT is
+    # negative, numer is floored at 1e-12, and EVERY node lands on the 0.01 floor.
+    # That used to happen with no signal at all. Message text is constant so the
+    # duplicate filter collapses it across the thousands of calls a PDE solve makes.
+    if np.any(sigma_loc < LOCAL_VOL_FLOOR) or np.any(sigma_loc > LOCAL_VOL_CAP):
+        warnings.warn(
+            f"Dupire: local vol hit its clip bounds ({LOCAL_VOL_FLOOR} or "
+            f"{LOCAL_VOL_CAP}) at some evaluation nodes; those values are clamped, "
+            "not computed. Values at the floor usually mean the surface has calendar "
+            "arbitrage there; values at the cap, extreme curvature or extrapolation "
+            "far beyond the quoted expiries.",
+            LocalVolClipWarning,
+            stacklevel=2,
+        )
+    sigma_loc = np.clip(sigma_loc, LOCAL_VOL_FLOOR, LOCAL_VOL_CAP)
 
     if sigma_loc.ndim == 0:
         return float(sigma_loc)

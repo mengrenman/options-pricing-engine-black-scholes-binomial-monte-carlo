@@ -20,7 +20,7 @@ from .exotics import barrier_price, asian_price, digital_price, lookback_price
 # Calibration & Dupire
 from .calibration import (
     SVIParams, VolSurface, fit_svi, fit_svi_quasi, fit_svi_surface,
-    dupire_local_vol, dupire_local_vol_func,
+    dupire_local_vol, dupire_local_vol_func, LocalVolClipWarning,
 )
 
 # PDE (Finite Difference)
@@ -56,7 +56,7 @@ __all__ = [
     "barrier_price", "asian_price", "digital_price", "lookback_price",
     # Calibration & Dupire
     "SVIParams", "VolSurface", "fit_svi", "fit_svi_quasi", "fit_svi_surface",
-    "dupire_local_vol", "dupire_local_vol_func",
+    "dupire_local_vol", "dupire_local_vol_func", "LocalVolClipWarning",
     # PDE (Finite Difference)
     "fd_price", "fd_price_barrier", "fd_greeks", "fd_price_local_vol",
     # FEM (Finite Element)
