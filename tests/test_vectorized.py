@@ -64,6 +64,26 @@ class TestBSGreeksVec:
         # Call delta should increase with spot
         assert np.all(np.diff(got["delta"]) > 0)
 
+    @pytest.mark.parametrize(
+        "S, K, T, r, q, sigma, kind",
+        [
+            (100, 100, 1.0, 0.03, 0.00, 0.20, "call"),
+            (100, 110, 0.5, 0.03, 0.02, 0.25, "put"),
+            (100,  90, 0.75, 0.04, 0.03, 0.30, "call"),
+            (100, 130, 0.5, 0.05, 0.01, 0.20, "put"),   # deep ITM put: theta > 0
+        ],
+    )
+    def test_theta_is_minus_dprice_dT(self, S, K, T, r, q, sigma, kind):
+        # Theta is the value change per year of elapsed time, i.e. -dPrice/dT
+        h = 1e-4
+        dprice_dT = (bs_price_vec(S, K, T + h, r, q, sigma, kind)
+                     - bs_price_vec(S, K, T - h, r, q, sigma, kind)) / (2 * h)
+        theta_vec = float(bs_greeks_vec(S, K, T, r, q, sigma, kind)["theta"])
+        opt = OptionSpec(S0=S, K=K, T=T, r=r, sigma=sigma, q=q)
+        theta_scalar = greeks_scalar(opt, kind)["theta"]
+        assert abs(theta_vec + float(dprice_dT)) < 1e-6
+        assert abs(theta_scalar + float(dprice_dT)) < 1e-6
+
 
 # ---------------------------------------------------------------------------
 # bs_implied_vol_vec

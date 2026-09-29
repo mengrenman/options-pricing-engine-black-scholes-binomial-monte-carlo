@@ -60,10 +60,12 @@ def bs_price_vec(S, K, T, r, q, sigma, kind) -> np.ndarray:
 # Vectorised Greeks
 # ---------------------------------------------------------------------------
 def bs_greeks_vec(S, K, T, r, q, sigma, kind) -> dict[str, np.ndarray]:
-    """Vectorised Black-Scholes Greeks.
+    """Vectorized Black-Scholes Greeks.
 
     Returns dict with keys: delta, gamma, vega, theta, rho.
-    Vega is dPrice/dSigma (absolute), theta is dPrice/dT (per year).
+    Vega is dPrice/dSigma (absolute).  Theta is -dPrice/dT, the change in
+    value per year of elapsed time: T is time to expiry, so it shrinks as
+    time passes, and a negative theta means the option loses value.
     """
     S, K, T, r, q, sigma = (np.asarray(x, dtype=float) for x in (S, K, T, r, q, sigma))
     d1, d2 = _d1_d2(S, K, T, r, q, sigma)

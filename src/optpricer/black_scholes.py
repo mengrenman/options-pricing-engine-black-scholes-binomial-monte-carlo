@@ -27,7 +27,11 @@ def price(opt: OptionSpec, kind: Literal["call","put"]=CALL) -> float:
         raise ValueError("kind must be 'call' or 'put'")
 
 def greeks(opt: OptionSpec, kind: Literal["call","put"]=CALL) -> Dict[str, float]:
-    """Returns greeks with sigma in absolute units (vega is dPrice/dSigma, not per 1%)."""
+    """Returns greeks with sigma in absolute units (vega is dPrice/dSigma, not per 1%).
+
+    Theta is -dPrice/dT, the change in value per year of elapsed time (T is
+    time to expiry, so it shrinks as time passes).
+    """
     d1, d2 = _d1_d2(opt.S0, opt.K, opt.T, opt.r, opt.q, opt.sigma)
     n_d1   = math.exp(-0.5 * d1*d1) / math.sqrt(2*math.pi)  # pdf
     N_d1   = _nd.cdf(d1)
