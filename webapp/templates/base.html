@@ -52,6 +52,10 @@
     .cols { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; }
     .cols.wide-first { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
     @media (max-width: 860px) { .cols, .cols.wide-first { grid-template-columns: minmax(0, 1fr); } }
+    /* The engines and Greeks tables need about 830 px of pane to sit side by side without
+       scrolling. Stack them in a narrower pane, as the side-by-side panes are at 1600-1770 px. */
+    #pricing-pane { container-type: inline-size; }
+    @container (max-width: 830px) { .cols.wide-first { grid-template-columns: minmax(0, 1fr); } }
     /* A heading with a control beside it, such as the local-vol time input. */
     .bar { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
            column-gap: 16px; }

@@ -8,10 +8,10 @@ A comprehensive options pricing library with **five independent pricing engines*
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/webapp-dark.png">
-  <img src="docs/images/webapp-light.png" alt="The optpricer web prototype in a 1920 by 1080 window. Left pane: one call option priced by Black-Scholes, a binomial tree (European and American), Monte Carlo and finite differences, with its Black-Scholes Greeks and price and delta plotted across spot. Right pane: a 3D implied-volatility surface, a Dupire local-vol chart beside it, and a fit-quality table for each expiry.">
+  <img src="docs/images/webapp-light.png" alt="The optpricer web prototype in a 1920 by 1080 window. Left pane: one call option priced by Black-Scholes, a binomial tree, Monte Carlo, finite differences and finite elements, with American prices from the tree and the grid, Greeks from Black-Scholes and from the grid, and price and delta plotted across spot. Right pane: a 3D implied-volatility surface, a Dupire local-vol chart beside it with tabs for the repriced smile and dynamics, and a fit-quality table for each expiry.">
 </picture>
 
-<p align="center"><em>The <a href="#web-prototype">web prototype</a> in a 1920 × 1080 window: Black-Scholes, binomial, Monte Carlo and finite-difference prices for one contract, and an SVI surface with its Dupire local vol. The quotes are synthetic.</em></p>
+<p align="center"><em>The <a href="#web-prototype">web prototype</a> in a 1920 × 1080 window: five engines pricing one contract, European and American, and an SVI surface with the Dupire local vol built from it. The quotes are synthetic.</em></p>
 
 ---
 
