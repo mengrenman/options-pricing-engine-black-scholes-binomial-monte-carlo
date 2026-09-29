@@ -36,7 +36,8 @@
     smile, standing in for market data. The fitted surface travels to the browser as JSON, so each
     local-vol request carries its own surface and the server keeps no state.</p>
   <form class="inputs" hx-post="/ui/surface" hx-target="#surface-result"
-        hx-trigger="load, input delay:400ms" hx-indicator="#surface-spin" hx-include="#lv-t, #lv-view">
+        hx-trigger="load, input delay:400ms" hx-indicator="#surface-spin"
+        hx-include="#lv-t, #lv-view, #lv-strike, #lv-k-auto">
     <label>Spot <input name="S0" value="{{ d.S0 }}" inputmode="decimal"></label>
     <label>Rate <input name="r" value="{{ d.r }}" inputmode="decimal"></label>
     <label>Dividend yield <input name="q" value="{{ d.q }}" inputmode="decimal"></label>
