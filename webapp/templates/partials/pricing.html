@@ -1,0 +1,51 @@
+<div class="cols">
+  <div>
+    <h3>Engines</h3>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Engine</th><th class="num">Price</th><th class="num">vs BS (bps)</th><th>Method</th></tr></thead>
+        <tbody>
+        {% for e in res.engines %}
+          <tr>
+            <td>{{ e.name }}</td>
+            <td class="num">{{ "%.6f"|format(e.price) }}{% if e.stderr is defined %}<br><span class="sub">± {{ "%.6f"|format(e.stderr) }}</span>{% endif %}</td>
+            <td class="num">{% if e.diff_bps is none %}–{% else %}{{ "%+.1f"|format(e.diff_bps) }}{% endif %}</td>
+            <td class="sub">{{ e.note }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <h3>Black-Scholes Greeks</h3>
+    <div class="scroll">
+      <table>
+        <thead><tr>{% for k in ["delta","gamma","vega","theta","rho"] %}<th class="num">{{ k|capitalize }}</th>{% endfor %}</tr></thead>
+        <tbody><tr>{% for k in ["delta","gamma","vega","theta","rho"] %}<td class="num">{{ "%.5f"|format(res.greeks[k]) }}</td>{% endfor %}</tr></tbody>
+      </table>
+    </div>
+    <p class="note" style="margin-top:8px">Vega and rho per unit of vol and rate; theta per year.</p>
+  </div>
+  <div>
+    <h3>Price and delta across spot</h3>
+    <div id="ladder-chart" class="chart"></div>
+  </div>
+</div>
+<script>
+  (function () {
+    const L = {{ res.ladder|tojson }};
+    const K = {{ res.inputs.K|tojson }};
+    const css = getComputedStyle(document.documentElement);
+    Plotly.newPlot("ladder-chart", [
+      { x: L.spot, y: L.price, name: "Price", mode: "lines",
+        line: { color: css.getPropertyValue("--accent").trim(), width: 2 } },
+      { x: L.spot, y: L.delta, name: "Delta", mode: "lines", yaxis: "y2",
+        line: { color: css.getPropertyValue("--accent-2").trim(), width: 2, dash: "dot" } },
+    ], plotLayout({
+      xaxis: { title: "Spot", gridcolor: css.getPropertyValue("--line").trim() },
+      yaxis: { title: "Price", gridcolor: css.getPropertyValue("--line").trim() },
+      yaxis2: { title: "Delta", overlaying: "y", side: "right", showgrid: false },
+      shapes: [{ type: "line", x0: K, x1: K, yref: "paper", y0: 0, y1: 1,
+                 line: { color: css.getPropertyValue("--muted").trim(), width: 1, dash: "dash" } }],
+    }), PLOT_CONFIG);
+  })();
+</script>

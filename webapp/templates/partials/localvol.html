@@ -1,0 +1,18 @@
+{% if res.extrapolated %}<p class="warn">t = {{ res.t }} lies outside the quoted expiries, so this slice is extrapolated.<span class="badge">extrapolated</span></p>{% endif %}
+{% for w in res.warnings %}<p class="warn" role="status">{{ w }}</p>{% endfor %}
+<div id="lv-chart" class="chart"></div>
+<script>
+  (function () {
+    const R = {{ res|tojson }};
+    const css = getComputedStyle(document.documentElement);
+    Plotly.newPlot("lv-chart", [
+      { x: R.spot, y: R.local_vol, name: "Local vol", mode: "lines",
+        line: { color: css.getPropertyValue("--accent").trim(), width: 2 } },
+      { x: R.spot, y: R.implied_vol, name: "Implied vol", mode: "lines",
+        line: { color: css.getPropertyValue("--accent-2").trim(), width: 2, dash: "dot" } },
+    ], plotLayout({
+      xaxis: { title: "Spot at t = " + R.t + "y", gridcolor: css.getPropertyValue("--line").trim() },
+      yaxis: { title: "Volatility", gridcolor: css.getPropertyValue("--line").trim() },
+    }), PLOT_CONFIG);
+  })();
+</script>

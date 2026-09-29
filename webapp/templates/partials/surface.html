@@ -1,0 +1,53 @@
+<div class="cols">
+  <div>
+    <h3>Implied volatility surface</h3>
+    <div id="surface-chart" class="chart tall"></div>
+  </div>
+  <div>
+    <h3>Fit quality per slice</h3>
+    <div class="scroll">
+      <table>
+        <thead><tr><th class="num">Expiry</th><th class="num">Forward</th><th class="num">IV RMSE (bps)</th></tr></thead>
+        <tbody>
+        {% for f in res.fit %}
+          <tr><td class="num">{{ "%.2f"|format(f.expiry) }}</td><td class="num">{{ "%.4f"|format(f.forward) }}</td>
+              <td class="num">{{ "%.2f"|format(f.rmse_bps) }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Dupire local vol <span class="spin" id="lv-spin">computing…</span></h3>
+    <form class="inputs" hx-post="/ui/localvol" hx-target="#lv-result"
+          hx-trigger="load, input delay:250ms" hx-indicator="#lv-spin" style="margin-bottom:6px">
+      <input type="hidden" name="surface" value="{{ res.surface_json }}">
+      <input type="hidden" name="S0" value="{{ S0 }}">
+      <input type="hidden" name="r" value="{{ r }}">
+      <input type="hidden" name="q" value="{{ q }}">
+      <label>Time (years) <input name="t" value="{{ t }}" inputmode="decimal"></label>
+    </form>
+    <div id="lv-result" aria-live="polite"></div>
+
+    <details>
+      <summary>Surface as JSON ({{ res.surface_json|length }} bytes), the only state the server needs</summary>
+      <pre>{{ res.surface_json }}</pre>
+    </details>
+  </div>
+</div>
+<script>
+  (function () {
+    const G = {{ res.grid|tojson }};
+    const css = getComputedStyle(document.documentElement);
+    const line = css.getPropertyValue("--line").trim();
+    const axis = (t) => ({ title: t, gridcolor: line, zerolinecolor: line, backgroundcolor: "rgba(0,0,0,0)" });
+    Plotly.newPlot("surface-chart", [{
+      type: "surface", x: G.k, y: G.T, z: G.iv, colorscale: "Viridis",
+      colorbar: { title: "IV", thickness: 12 },
+      hovertemplate: "log-moneyness %{x:.3f}<br>expiry %{y:.2f}y<br>IV %{z:.4f}<extra></extra>",
+    }], plotLayout({
+      margin: { l: 10, r: 0, t: 10, b: 0 },
+      scene: { xaxis: axis("log-moneyness"), yaxis: axis("expiry (y)"), zaxis: axis("IV"),
+               camera: { eye: { x: 1.6, y: -1.6, z: 0.9 } } },
+    }), PLOT_CONFIG);
+  })();
+</script>

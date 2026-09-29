@@ -182,6 +182,17 @@ python -m ipykernel install --user --name optpricer --display-name "Python (optp
 Every notebook records `optpricer` as its kernel, so Jupyter picks it up automatically
 once that kernelspec exists.
 
+### Web prototype
+
+A FastAPI + HTMX front end lives in `webapp/`, outside the library. It needs the `web` extra:
+
+```bash
+python -m pip install -e ".[web]"
+uvicorn webapp.main:app --reload
+```
+
+See [`webapp/README.md`](webapp/README.md) for the design and the JSON API.
+
 ---
 
 ## Quickstart

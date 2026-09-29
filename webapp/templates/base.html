@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>optpricer</title>
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root {
+      --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1f23; --muted: #62666d;
+      --line: #e3e3de; --accent: #2f6fdb; --accent-2: #d9822b; --bad: #b3261e;
+      --bad-bg: #fbeaea; --good: #1f7a4d; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16181c; --panel: #1f2227; --ink: #e8e9eb; --muted: #9aa0a8;
+        --line: #33373e; --accent: #6ea0f5; --accent-2: #f0a55a; --bad: #f2877e;
+        --bad-bg: #3a2021; --good: #5cc592;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink);
+           font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    header { padding: 20px 16px 8px; max-width: 1180px; margin: 0 auto; }
+    header h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
+    header p { margin: 4px 0 0; color: var(--muted); }
+    /* minmax(0, 1fr), not 1fr: a bare 1fr track has an automatic minimum and grows to the
+       min-content width of the nowrap tables, so the .scroll wrappers never get to scroll. */
+    main { max-width: 1180px; margin: 0 auto; padding: 8px 16px 40px; display: grid;
+           grid-template-columns: minmax(0, 1fr); gap: 20px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+             padding: 18px 20px; min-width: 0; }
+    .panel h2 { margin: 0 0 4px; font-size: 17px; }
+    .note { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+    form.inputs { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+                  gap: 10px 14px; margin-bottom: 16px; }
+    label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+    input, select { font: 14px var(--mono); padding: 6px 8px; border: 1px solid var(--line);
+                    border-radius: 6px; background: var(--bg); color: var(--ink); width: 100%; }
+    input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .cols { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; }
+    @media (max-width: 860px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+    .scroll { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    th { color: var(--muted); font-weight: 500; }
+    td.num { font-family: var(--mono); text-align: right; }
+    th.num { text-align: right; }
+    td.sub { color: var(--muted); white-space: normal; min-width: 9em; }
+    h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); font-weight: 600;
+         text-transform: uppercase; letter-spacing: 0.04em; }
+    .chart { width: 100%; height: 320px; }
+    .chart.tall { height: 420px; }
+    .error { background: var(--bad-bg); color: var(--bad); border-radius: 6px; padding: 10px 12px; }
+    .warn { color: var(--accent-2); font-size: 13px; }
+    .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px;
+             border: 1px solid var(--accent-2); color: var(--accent-2); margin-left: 6px; }
+    details { margin-top: 12px; }
+    details pre { font: 11px/1.4 var(--mono); max-height: 220px; overflow: auto;
+                  background: var(--bg); padding: 10px; border-radius: 6px; }
+    .htmx-request .spin { opacity: 1; }
+    .spin { opacity: 0; transition: opacity .15s; color: var(--muted); font-size: 12px; margin-left: 8px; }
+  </style>
+  <script>
+    // Plotly layout that follows the page's light/dark palette.
+    function plotLayout(extra) {
+      const css = getComputedStyle(document.documentElement);
+      const ink = css.getPropertyValue("--ink").trim();
+      const line = css.getPropertyValue("--line").trim();
+      const base = {
+        paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+        font: { color: ink, size: 12 }, margin: { l: 56, r: 56, t: 10, b: 46 },
+        xaxis: { gridcolor: line, zerolinecolor: line },
+        yaxis: { gridcolor: line, zerolinecolor: line },
+        legend: { orientation: "h", y: 1.12 },
+      };
+      return Object.assign(base, extra || {});
+    }
+    const PLOT_CONFIG = { responsive: true, displaylogo: false };
+  </script>
+</head>
+<body>
+  <header>
+    <h1>optpricer</h1>
+    <p>Prototype front end: FastAPI + HTMX, Plotly for charts. Every input recomputes on the server.</p>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

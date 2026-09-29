@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Price an option <span class="spin" id="price-spin">computing…</span></h2>
+  <p class="note">Five engines on one contract, with differences from Black-Scholes in basis points of
+    price. The American binomial price can sit above the rest because it allows early exercise, which
+    pays for puts but never for a call on a stock with no dividend, so there the two match.</p>
+  <form class="inputs" hx-post="/ui/price" hx-target="#price-result"
+        hx-trigger="load, input delay:250ms" hx-indicator="#price-spin">
+    <label>Spot <input name="S0" value="{{ d.S0 }}" inputmode="decimal"></label>
+    <label>Strike <input name="K" value="{{ d.K }}" inputmode="decimal"></label>
+    <label>Expiry (years) <input name="T" value="{{ d.T }}" inputmode="decimal"></label>
+    <label>Rate <input name="r" value="{{ d.r }}" inputmode="decimal"></label>
+    <label>Dividend yield <input name="q" value="{{ d.q }}" inputmode="decimal"></label>
+    <label>Volatility <input name="sigma" value="{{ d.sigma }}" inputmode="decimal"></label>
+    <label>Type
+      <select name="kind">
+        <option value="call" {% if d.kind == "call" %}selected{% endif %}>Call</option>
+        <option value="put" {% if d.kind == "put" %}selected{% endif %}>Put</option>
+      </select>
+    </label>
+  </form>
+  <div id="price-result" aria-live="polite"></div>
+</section>
+
+<section class="panel">
+  <h2>Volatility surface <span class="spin" id="surface-spin">calibrating…</span></h2>
+  <p class="note">SVI calibrated slice by slice to <strong>synthetic</strong> quotes from a parametric
+    smile, standing in for market data. The fitted surface travels back to the browser as JSON, so the
+    local-vol request below it carries its own surface and the server keeps no state.</p>
+  <form class="inputs" hx-post="/ui/surface" hx-target="#surface-result"
+        hx-trigger="load, input delay:400ms" hx-indicator="#surface-spin">
+    <label>Spot <input name="S0" value="{{ d.S0 }}" inputmode="decimal"></label>
+    <label>Rate <input name="r" value="{{ d.r }}" inputmode="decimal"></label>
+    <label>Dividend yield <input name="q" value="{{ d.q }}" inputmode="decimal"></label>
+    <label>ATM vol <input name="atm_vol" value="{{ d.atm_vol }}" inputmode="decimal"></label>
+    <label>Skew <input name="skew" value="{{ d.skew }}" inputmode="decimal"></label>
+    <label>Curvature <input name="curvature" value="{{ d.curvature }}" inputmode="decimal"></label>
+    <label>Term slope <input name="term_slope" value="{{ d.term_slope }}" inputmode="decimal"></label>
+  </form>
+  <div id="surface-result" aria-live="polite"></div>
+</section>
+{% endblock %}
