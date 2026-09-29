@@ -145,6 +145,28 @@ def _binomial_row(opt, kind: str, american: bool) -> dict:
     return _row(name, note, lambda: op.crr(opt, kind, N=BINOMIAL_STEPS, american=american))
 
 
+def _ladder(S0, K, T, r, q, sigma, kind) -> dict:
+    """Black-Scholes price and delta across spot, 50% to 150% of S0, rounded for the chart.
+    Raises InputError if any value is not finite."""
+    spots = np.linspace(0.5 * S0, 1.5 * S0, 121)
+    try:
+        price = op.bs_price_vec(spots, K, T, r, q, sigma, kind)
+        delta = op.bs_greeks_vec(spots, K, T, r, q, sigma, kind)["delta"]
+    except (ValueError, ArithmeticError) as exc:
+        raise InputError(str(exc)) from exc
+    if not (np.all(np.isfinite(price)) and np.all(np.isfinite(delta))):
+        raise InputError("These inputs produce a non-finite Black-Scholes price or Greek.")
+    # Full float repr more than doubles the payload.
+    return {"spot": np.round(spots, 6).tolist(), "price": np.round(price, 6).tolist(),
+            "delta": np.round(delta, 6).tolist()}
+
+
+def spot_ladder(S0, K, T, r, q, sigma, kind) -> dict:
+    """The pricing pane's spot-ladder view: price and delta across spot."""
+    S0, K, T, r, q, sigma, kind = validate_option(S0, K, T, r, q, sigma, kind)
+    return {"K": K, "ladder": _ladder(S0, K, T, r, q, sigma, kind)}
+
+
 def price_all(S0, K, T, r, q, sigma, kind, mc_paths=DEFAULT_MC_PATHS) -> dict:
     """Price one contract with Black-Scholes, the binomial tree (European and
     American), Monte Carlo and finite differences, plus Greeks and a spot ladder."""
@@ -158,14 +180,11 @@ def price_all(S0, K, T, r, q, sigma, kind, mc_paths=DEFAULT_MC_PATHS) -> dict:
         opt = op.OptionSpec(S0=S0, K=K, T=T, r=r, sigma=sigma, q=q)
         bs = float(op.bs_price(opt, kind))
         greeks = {k: float(v) for k, v in op.bs_greeks(opt, kind).items()}
-        spots = np.linspace(0.5 * S0, 1.5 * S0, 121)
-        ladder_price = op.bs_price_vec(spots, K, T, r, q, sigma, kind)
-        ladder_delta = op.bs_greeks_vec(spots, K, T, r, q, sigma, kind)["delta"]
     except (ValueError, ArithmeticError) as exc:
         raise InputError(str(exc)) from exc
-    if not (math.isfinite(bs) and all(math.isfinite(v) for v in greeks.values())
-            and np.all(np.isfinite(ladder_price)) and np.all(np.isfinite(ladder_delta))):
+    if not (math.isfinite(bs) and all(math.isfinite(v) for v in greeks.values())):
         raise InputError("These inputs produce a non-finite Black-Scholes price or Greek.")
+    ladder = _ladder(S0, K, T, r, q, sigma, kind)
 
     mc_note = f"{mc_paths:,} paths, antithetic + control variate"
     try:
@@ -197,10 +216,7 @@ def price_all(S0, K, T, r, q, sigma, kind, mc_paths=DEFAULT_MC_PATHS) -> dict:
         "inputs": {"S0": S0, "K": K, "T": T, "r": r, "q": q, "sigma": sigma, "kind": kind},
         "engines": engines,
         "greeks": greeks,
-        # Chart-only data, rounded: full float repr more than doubles the payload.
-        "ladder": {"spot": np.round(spots, 6).tolist(),
-                   "price": np.round(ladder_price, 6).tolist(),
-                   "delta": np.round(ladder_delta, 6).tolist()},
+        "ladder": ladder,
     }
 
 

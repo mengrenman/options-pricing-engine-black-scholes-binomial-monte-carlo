@@ -121,7 +121,10 @@ class TestHTMX:
     def test_price_fragment(self, client):
         frag = client.post("/ui/price", data={**{k: str(v) for k, v in BASE.items()},
                                               "kind": "call"}).text
-        assert "Black-Scholes" in frag and "ladder-chart" in frag
+        assert "Black-Scholes" in frag
+        view = client.post("/ui/ladder", data={**{k: str(v) for k, v in BASE.items()},
+                                               "kind": "call"}).text
+        assert "ladder-chart" in view and 'role="alert"' not in view
 
     def test_bad_input_renders_an_inline_error_with_status_200(self, client):
         """HTMX does not swap 4xx responses, so a 400 would look like nothing happened."""

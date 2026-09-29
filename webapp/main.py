@@ -97,6 +97,13 @@ app = FastAPI(title="optpricer", version="0.1.0-prototype")
 app.add_middleware(BodySizeLimit, max_bytes=MAX_BODY_BYTES)
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
+# Views in the surface pane's local-vol column, in tab order; the first is the default.
+# Each loads from its route with the fields of the column's form.
+LV_VIEW_LIST = [
+    {"key": "at-t", "label": "Dupire local vol", "route": "/ui/localvol"},
+]
+LV_VIEWS = tuple(v["key"] for v in LV_VIEW_LIST)
+
 DEFAULTS = {"S0": 100, "K": 100, "T": 1.0, "r": 0.05, "q": 0.0, "sigma": 0.20,
             "kind": "call", "atm_vol": 0.20, "skew": -0.30, "curvature": 0.60,
             "term_slope": 0.02, "t": 0.5}
@@ -144,10 +151,21 @@ def ui_price(request: Request, S0: str = Form(""), K: str = Form(""), T: str = F
     return templates.TemplateResponse(request, "partials/pricing.html", {"res": result})
 
 
+@app.post("/ui/ladder", response_class=HTMLResponse)
+def ui_ladder(request: Request, S0: str = Form(""), K: str = Form(""), T: str = Form(""),
+              r: str = Form(""), q: str = Form(""), sigma: str = Form(""),
+              kind: str = Form("call")):
+    try:
+        result = engine.spot_ladder(S0, K, T, r, q, sigma, kind)
+    except engine.InputError as exc:
+        return _error(request, str(exc))
+    return templates.TemplateResponse(request, "partials/ladder.html", {"res": result})
+
+
 @app.post("/ui/surface", response_class=HTMLResponse)
 def ui_surface(request: Request, S0: str = Form(""), r: str = Form(""), q: str = Form(""),
                atm_vol: str = Form(""), skew: str = Form(""), curvature: str = Form(""),
-               term_slope: str = Form(""), t: str = Form("")):
+               term_slope: str = Form(""), t: str = Form(""), lv_view: str = Form("")):
     try:
         result = engine.fit_surface(S0, r, q, atm_vol, skew, curvature, term_slope)
     except engine.InputError as exc:
@@ -155,7 +173,10 @@ def ui_surface(request: Request, S0: str = Form(""), r: str = Form(""), q: str =
     # The local-vol form below the chart posts these back with the surface. Its
     # time input lives inside this fragment, so echo whatever the user had there
     # (sent via hx-include) rather than resetting it on every refit.
-    ctx = {"res": result, "S0": S0, "r": r, "q": q, "t": t.strip() or DEFAULTS["t"]}
+    # The same goes for the local-vol view the user had selected.
+    view = lv_view if lv_view in LV_VIEWS else LV_VIEWS[0]
+    ctx = {"res": result, "S0": S0, "r": r, "q": q, "t": t.strip() or DEFAULTS["t"],
+           "lv_view": view, "lv_views": LV_VIEW_LIST}
     return templates.TemplateResponse(request, "partials/surface.html", ctx)
 
 

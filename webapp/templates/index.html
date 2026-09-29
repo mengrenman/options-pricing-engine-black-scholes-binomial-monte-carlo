@@ -5,7 +5,7 @@
   <p class="note">Black-Scholes, a binomial tree, Monte Carlo and finite differences price one
     contract, compared with Black-Scholes in basis points. The tree's American price can sit higher
     because it allows early exercise; for a call, that has value only with a dividend or a negative rate.</p>
-  <form class="inputs" hx-post="/ui/price" hx-target="#price-result"
+  <form class="inputs" id="price-form" hx-post="/ui/price" hx-target="#price-result"
         hx-trigger="load, input delay:250ms" hx-indicator="#price-spin">
     <label>Spot <input name="S0" value="{{ d.S0 }}" inputmode="decimal"></label>
     <label>Strike <input name="K" value="{{ d.K }}" inputmode="decimal"></label>
@@ -21,6 +21,12 @@
     </label>
   </form>
   <div id="price-result" aria-live="polite"></div>
+  <div class="tabs" role="tablist" data-group="price">
+    <button type="button" role="tab" data-view="ladder" aria-selected="true">Price and delta across spot</button>
+  </div>
+  <div class="view" data-group="price" data-view="ladder" data-follows="price-form"
+       hx-post="/ui/ladder" hx-include="#price-form" hx-trigger="shown, refresh"
+       hx-indicator="#price-spin" aria-live="polite"></div>
 </section>
 
 <section class="panel">
@@ -30,7 +36,7 @@
     smile, standing in for market data. The fitted surface travels to the browser as JSON, so each
     local-vol request carries its own surface and the server keeps no state.</p>
   <form class="inputs" hx-post="/ui/surface" hx-target="#surface-result"
-        hx-trigger="load, input delay:400ms" hx-indicator="#surface-spin" hx-include="#lv-t">
+        hx-trigger="load, input delay:400ms" hx-indicator="#surface-spin" hx-include="#lv-t, #lv-view">
     <label>Spot <input name="S0" value="{{ d.S0 }}" inputmode="decimal"></label>
     <label>Rate <input name="r" value="{{ d.r }}" inputmode="decimal"></label>
     <label>Dividend yield <input name="q" value="{{ d.q }}" inputmode="decimal"></label>

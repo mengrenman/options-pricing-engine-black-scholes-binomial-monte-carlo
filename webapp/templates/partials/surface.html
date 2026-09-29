@@ -5,17 +5,25 @@
   </div>
   <div class="lv-col">
     <div class="bar">
-      <h3>Dupire local vol <span class="spin" id="lv-spin">computing…</span></h3>
-      <form class="inline" hx-post="/ui/localvol" hx-target="#lv-result"
-            hx-trigger="load, input delay:250ms" hx-indicator="#lv-spin">
+      <div class="tabs" role="tablist" data-group="lv">
+        {% for v in lv_views %}<button type="button" role="tab" data-view="{{ v.key }}"
+          aria-selected="{{ 'true' if v.key == lv_view else 'false' }}">{{ v.label }}</button>{% endfor %}
+        <span class="spin" id="lv-spin">computing…</span>
+      </div>
+      <form class="inline" id="lv-form" onsubmit="return false">
         <input type="hidden" name="surface" value="{{ res.surface_json }}">
         <input type="hidden" name="S0" value="{{ S0 }}">
         <input type="hidden" name="r" value="{{ r }}">
         <input type="hidden" name="q" value="{{ q }}">
+        <input type="hidden" id="lv-view" name="lv_view" value="{{ lv_view }}" data-view-memo="lv">
         <label>Time (years) <input id="lv-t" name="t" value="{{ t }}" inputmode="decimal"></label>
       </form>
     </div>
-    <div id="lv-result" aria-live="polite"></div>
+    {% for v in lv_views %}
+    <div class="view" data-group="lv" data-view="{{ v.key }}" data-follows="lv-form"
+         {% if v.key != lv_view %}hidden {% endif %}hx-post="{{ v.route }}" hx-include="#lv-form"
+         hx-trigger="shown, refresh" hx-indicator="#lv-spin" aria-live="polite"></div>
+    {% endfor %}
   </div>
 </div>
 
