@@ -1,10 +1,17 @@
 # optpricer — Production Options Pricing Engine
 
-A comprehensive options pricing library with **five independent pricing engines** (Black-Scholes, Monte Carlo, Binomial Trees, Finite Differences, Finite Elements), smile-capable stochastic process generators, SVI calibration, Dupire local volatility, Milstein discretisation, risk management, and model validation.
+A comprehensive options pricing library with **five independent pricing engines** (Black-Scholes, Monte Carlo, Binomial Trees, Finite Differences, Finite Elements), smile-capable stochastic process generators, SVI calibration, Dupire local volatility, Milstein discretization, risk management, and model validation.
 
 - **Python**: 3.10+
 - **Layout**: `src/` (editable installs work cleanly)
 - **License**: MIT
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/webapp-dark.png">
+  <img src="docs/images/webapp-light.png" alt="The optpricer web prototype at 1920 by 1080. Left pane: one call option priced by Black-Scholes, a binomial tree (European and American), Monte Carlo and finite differences, with its Black-Scholes Greeks and price and delta plotted across spot. Right pane: a 3D implied-volatility surface, a Dupire local-vol chart beside it, and a fit-quality table for each expiry.">
+</picture>
+
+<p align="center"><em>The <a href="#web-prototype">web prototype</a> at 1920 × 1080: Black-Scholes, binomial, Monte Carlo and finite-difference prices for one contract, and an SVI surface with its Dupire local vol. The quotes are synthetic.</em></p>
 
 ---
 
@@ -14,11 +21,16 @@ A comprehensive options pricing library with **five independent pricing engines*
 
 | Engine | Module | Capabilities |
 |---|---|---|
-| **Black-Scholes** | `black_scholes.py` | European calls/puts, Greeks, implied vol solver, vectorised batch pricing |
-| **Binomial (CRR)** | `binomial.py` | European & American pricing, vectorised |
+| **Black-Scholes** | `black_scholes.py` | European calls/puts, Greeks, implied vol solver, vectorized batch pricing |
+| **Binomial (CRR)** | `binomial.py` | European & American pricing, vectorized |
 | **Monte Carlo** | `monte_carlo.py` | Antithetic variates, control variate, chunked memory, multi-worker |
 | **Finite Difference (FDM)** | `pde.py` | θ-scheme on log-spot grid, European/American, barriers (knock-in/out), local-vol pricing, grid-based Greeks |
 | **Finite Element (FEM)** | `fem.py` | 1D Galerkin with linear hat functions, consistent mass + stiffness matrices |
+
+<p align="center">
+  <img src="docs/images/american-vs-european-put.png" width="880" alt="Two line charts over strikes 70 to 130. Left: European and American put prices, close together at low strikes and reaching about 27 and 30 at strike 130. Right: the American minus European price, rising steadily from 0 to about 3.">
+  <br><em>Finite-difference prices of European and American puts across strikes, for spot 100, one year to expiry, r = 5%, q = 2% and σ = 20%. The early-exercise premium grows with the strike to 3.03 at K = 130, where the American put is worth exactly its intrinsic value. From <a href="notebooks/04_PDE_Finite_Difference.ipynb">notebook 04</a>.</em>
+</p>
 
 ### Exotic Options
 
@@ -59,6 +71,16 @@ A comprehensive options pricing library with **five independent pricing engines*
 - **Convergence analysis** — error decay and order estimation
 - **Stress testing** — 3D (spot × vol × rate) shock grid
 - **Delta-hedge backtesting** — P&L simulation from hedging along GBM paths
+
+<p align="center">
+  <img src="docs/images/convergence-fdm-fem-tree.png" width="700" alt="Log-log plot of absolute pricing error against the Black-Scholes price for N from 25 to 800, for FDM, FEM and the CRR tree, with 1/N and 1/N-squared reference lines. At N = 800 the errors are about 9e-5 for FDM, 3e-5 for FEM and 2.5e-3 for the tree.">
+  <br><em>Error against the Black-Scholes price for an at-the-money one-year call (spot = strike = 100, r = 5%, σ = 20%) as the grid size or tree steps N grow from 25 to 800. From N = 50 on, FDM and FEM errors fall at second order and the CRR tree's at first order. The fitted orders in the legend include the N = 25 point. From <a href="notebooks/07_Risk_and_Validation.ipynb">notebook 07</a>.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/delta-hedge-pnl.png" width="700" alt="Histogram of delta-hedging P&L from about -3.2 to 2.1, sharply peaked at zero, with a dashed line at the mean of 0.004.">
+  <br><em>P&L from delta-hedging the same call with daily rebalancing over 20,000 simulated GBM paths (10,000 antithetic pairs). The mean is 0.004 and the standard deviation 0.45. From <a href="notebooks/07_Risk_and_Validation.ipynb">notebook 07</a>.</em>
+</p>
 
 ---
 
@@ -137,7 +159,7 @@ best of several runs. Treat them as relative guidance, not a benchmark suite.
 Three things drive these numbers, and two of them affect how you should call
 the library:
 
-- **Use the vectorised pricers for grids.** `bs_price_vec` / `bs_greeks_vec`
+- **Use the vectorized pricers for grids.** `bs_price_vec` / `bs_greeks_vec`
   take arrays and broadcast, and are ~24x faster than building one
   `OptionSpec` per point and calling the scalar pricer. `OptionSpec` is meant
   for a single contract you price once; it is not a batch interface.
@@ -191,7 +213,7 @@ python -m pip install -e ".[web]"
 uvicorn webapp.main:app --reload
 ```
 
-See [`webapp/README.md`](webapp/README.md) for the design and the JSON API.
+The screenshot at the top of this README shows it at 1920 × 1080. See [`webapp/README.md`](webapp/README.md) for the design and the JSON API.
 
 ---
 
@@ -302,7 +324,7 @@ src/
     __init__.py           # public API (43 exports), version 0.3.0
     core.py               # OptionSpec, CALL/PUT constants
     black_scholes.py      # BS price, Greeks, implied vol
-    black_scholes_vec.py  # vectorised BS (batch across strikes/spots)
+    black_scholes_vec.py  # vectorized BS (batch across strikes/spots)
     binomial.py           # CRR tree (European/American)
     monte_carlo.py        # MC with variance reduction, chunked memory
     _tridiag.py           # shared tridiagonal solve (LAPACK banded)
