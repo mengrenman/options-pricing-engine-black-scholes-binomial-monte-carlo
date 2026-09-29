@@ -944,3 +944,47 @@ class TestLocalVolClipWarning:
             warnings.simplefilter("error")                  # any warning fails
             for t in (0.05, 0.4, 1.0, 1.9):
                 dupire_local_vol(surf, np.linspace(60.0, 160.0, 101), t, 0.03, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Invalid spot is refused, not turned into a silent NaN
+# ---------------------------------------------------------------------------
+class TestLocalVolSpotValidation:
+    """Regression: a non-positive or non-finite spot made dupire_local_vol
+    return NaN at that node. The clip warning could not see it, because every
+    comparison with NaN is False, and a NaN spot produced no warning of any
+    kind."""
+
+    @pytest.mark.parametrize("bad", [0.0, -5.0, np.nan, np.inf, -np.inf])
+    def test_invalid_spot_raises(self, bad):
+        from optpricer.calibration import dupire_local_vol
+
+        surf = TestForwardCarry._surface()
+        with pytest.raises(ValueError, match="finite and positive"):
+            dupire_local_vol(surf, np.array([bad, 100.0]), 0.4, 0.03, 0.0)
+
+    def test_scalar_invalid_spot_raises(self):
+        from optpricer.calibration import dupire_local_vol
+
+        with pytest.raises(ValueError, match="finite and positive"):
+            dupire_local_vol(TestForwardCarry._surface(), np.nan, 0.4, 0.03, 0.0)
+
+    def test_tiny_positive_spot_is_still_computed(self):
+        """A spot of 1e-300 is valid; it clamps at the cap and says so."""
+        from optpricer.calibration import LOCAL_VOL_CAP, LocalVolClipWarning, dupire_local_vol
+
+        with pytest.warns(LocalVolClipWarning):
+            v = np.atleast_1d(dupire_local_vol(TestForwardCarry._surface(),
+                                               np.array([1e-300, 100.0]), 0.4, 0.03, 0.0))
+        assert v[0] == LOCAL_VOL_CAP and np.isfinite(v).all()
+
+    def test_no_engine_passes_an_invalid_spot(self):
+        """The engines floor paths at 1e-10 and build PDE grids with exp(), so the
+        check must never fire from inside the library -- including on a coarse
+        Euler grid, the scheme most prone to drifting toward zero."""
+        from optpricer.calibration import dupire_local_vol_func
+        from optpricer.processes import local_vol_paths, milstein_local_vol_paths
+
+        sig = dupire_local_vol_func(TestForwardCarry._surface(), 0.03, 0.0)
+        local_vol_paths(100.0, 0.03, 0.0, 2.0, 8, 5_000, sig, seed=1)
+        milstein_local_vol_paths(100.0, 0.03, 0.0, 2.0, 8, 5_000, sig, seed=1)

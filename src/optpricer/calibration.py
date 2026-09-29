@@ -897,7 +897,8 @@ def dupire_local_vol(
     ----------
     surface : VolSurface
     S : float or array
-        Spot/strike value(s) at which to evaluate local vol.
+        Spot/strike value(s) at which to evaluate local vol.  Must be finite
+        and positive; anything else raises ``ValueError``.
     t : float
         Time point.
     r, q : float
@@ -921,6 +922,19 @@ def dupire_local_vol(
         raises :class:`LocalVolClipWarning`.
     """
     S_arr = np.asarray(S, dtype=float)
+
+    # Local vol is undefined at a non-positive or non-finite spot: log(S/F)
+    # becomes -inf or NaN and so does the result. The clip below cannot catch
+    # it either, because every comparison with NaN is False -- a NaN spot came
+    # back as a NaN local vol with no warning at all. No engine in this library
+    # produces such a spot (paths are floored at 1e-10, PDE grids use exp()),
+    # so this only ever fires on a caller's own bad input.
+    invalid = ~np.isfinite(S_arr) | (S_arr <= 0.0)
+    if np.any(invalid):
+        raise ValueError(
+            "dupire_local_vol: spot must be finite and positive; got "
+            f"{int(np.count_nonzero(invalid))} invalid value(s)."
+        )
     t = max(t, 1e-8)  # avoid t = 0
 
     # Forward at t.  Inside the quoted range the curve is interpolated; outside
