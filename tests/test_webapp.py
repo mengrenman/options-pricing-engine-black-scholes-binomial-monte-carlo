@@ -149,6 +149,56 @@ class TestHTMX:
 
 
 # ---------------------------------------------------------------------------
+# Side-by-side layout and chart swaps
+# ---------------------------------------------------------------------------
+SURFACE_FORM = {"S0": "100", "r": "0.03", "q": "0", "atm_vol": "0.2", "skew": "-0.3",
+                "curvature": "0.6", "term_slope": "0.02"}
+
+
+class TestLayout:
+    def test_htmx_does_not_settle_the_chart_class(self, client):
+        """htmx gives a swapped-in element the old element's class, then restores its own
+        20 ms later. That restore wiped the js-plotly-plot class Plotly had just added, and
+        every chart fell apart after the first input change."""
+        page = client.get("/").text
+        meta = re.search(r'<meta name="htmx-config" content=\'([^\']*)\'>', page)
+        assert meta, "the htmx-config meta tag is missing"
+        assert "class" not in json.loads(meta.group(1))["attributesToSettle"]
+        assert page.index('name="htmx-config"') < page.index("htmx.org@2.0.4"), \
+            "htmx reads its config when it loads, so the meta tag must come first"
+
+    def test_local_vol_chart_is_drawn_after_the_old_one_is_removed(self, client):
+        """Its height is what its notes leave, so it must not be measured while the
+        outgoing notes and chart are still in the page."""
+        surface_json = engine.fit_surface(100, 0.03, 0, 0.2, -0.3, 0.6, 0.02)["surface_json"]
+        lv = client.post("/ui/localvol", data={"surface": surface_json, "S0": "100",
+                                               "t": "0.5", "r": "0.03", "q": "0"}).text
+        assert "setTimeout(function" in lv and "}, 0);" in lv
+
+    def test_synthetic_quotes_badge_sits_in_the_surface_heading(self, client):
+        page = client.get("/").text
+        assert re.search(r'<h2>Volatility surface <span class="badge">synthetic quotes</span>',
+                         page)
+
+    def test_fit_table_has_one_column_per_expiry(self, client):
+        frag = client.post("/ui/surface", data=SURFACE_FORM).text
+        table = re.search(r'<table class="fit">(.*?)</table>', frag, re.DOTALL).group(1)
+        head = re.search(r"<thead>(.*?)</thead>", table, re.DOTALL).group(1)
+        assert len(re.findall(r'<th class="num">', head)) == len(engine.SURFACE_EXPIRIES)
+        assert re.findall(r'<th scope="row">([^<]*)</th>', table) == \
+            ["Expiry (years)", "Forward", "IV RMSE (bps)"]
+
+    def test_greeks_table_gives_every_greek_its_units(self, client):
+        frag = client.post("/ui/price", data={**{k: str(v) for k, v in BASE.items()},
+                                              "kind": "call"}).text
+        for greek, unit in [("Delta", "per unit of spot"), ("Gamma", "delta per unit of spot"),
+                            ("Vega", "per unit of vol"), ("Theta", "per year"),
+                            ("Rho", "per unit of rate")]:
+            assert re.search(rf"<td>{greek}</td><td class=\"num\">[-0-9.]+</td>"
+                             rf"<td class=\"sub\">{unit}</td>", frag), greek
+
+
+# ---------------------------------------------------------------------------
 # Server hazards identified before building
 # ---------------------------------------------------------------------------
 class TestServerHazards:

@@ -4,6 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>optpricer</title>
+  <!-- htmx "settles" class and style: an element swapped in with the id of the one it replaces
+       starts with the old element's attributes and gets its own back 20 ms later. That reset
+       wipes the js-plotly-plot class Plotly has just added to a chart div, and all of Plotly's
+       positioning CSS hangs off that class, so every chart broke after the first input change.
+       Nothing here uses the CSS transitions that settling exists for. -->
+  <meta name="htmx-config" content='{"attributesToSettle": []}'>
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <style>
@@ -39,8 +45,14 @@
     input, select { font: 14px var(--mono); padding: 6px 8px; border: 1px solid var(--line);
                     border-radius: 6px; background: var(--bg); color: var(--ink); width: 100%; }
     input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    form.inline label { flex-direction: row; align-items: center; gap: 8px; }
+    form.inline input { width: 6em; }
     .cols { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; }
-    @media (max-width: 860px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+    .cols.wide-first { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
+    @media (max-width: 860px) { .cols, .cols.wide-first { grid-template-columns: minmax(0, 1fr); } }
+    /* A heading with a control beside it, such as the local-vol time input. */
+    .bar { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+           column-gap: 16px; }
     .scroll { overflow-x: auto; }
     table { border-collapse: collapse; width: 100%; font-size: 13px; }
     th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -54,8 +66,10 @@
     .chart.tall { height: 420px; }
     .error { background: var(--bad-bg); color: var(--bad); border-radius: 6px; padding: 10px 12px; }
     .warn { color: var(--accent-2); font-size: 13px; }
+    p.warn { margin: 4px 0; }
     .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px;
              border: 1px solid var(--accent-2); color: var(--accent-2); margin-left: 6px; }
+    h2 .badge { vertical-align: 2px; font-weight: 500; }
     details { margin-top: 12px; }
     details pre { font: 11px/1.4 var(--mono); max-height: 220px; overflow: auto;
                   background: var(--bg); padding: 10px; border-radius: 6px; }
@@ -63,6 +77,30 @@
        descendant form alone never matched and the spinner never showed. */
     .htmx-request.spin, .htmx-request .spin { opacity: 1; }
     .spin { opacity: 0; transition: opacity .15s; color: var(--muted); font-size: 12px; margin-left: 8px; }
+    /* Beside the 3D chart, the local-vol chart takes the height its notes leave, so the two
+       charts end on the same line however many notes there are, and the page does not grow. */
+    @media (min-width: 861px) {
+      .lv-col { display: flex; flex-direction: column; }
+      #lv-result { flex: 1 1 auto; display: flex; flex-direction: column; }
+      #lv-chart { flex: 1 1 0; min-height: 260px; height: auto; }
+    }
+    /* Wide screens put the two panes side by side, sized so both fit a 1920 x 1080 display
+       without scrolling. Narrower windows keep the stacked layout above. */
+    @media (min-width: 1600px) {
+      header, main { max-width: 2400px; }
+      header { display: flex; align-items: baseline; gap: 14px; padding: 12px 16px 4px; }
+      header p { margin: 0; }
+      main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding: 4px 16px 16px; }
+      .panel { padding: 14px 16px; }
+      .note { margin-bottom: 10px; }
+      /* Every field on one row, however many there are. */
+      form.inputs { grid-auto-flow: column; grid-template-columns: none; grid-auto-columns: minmax(0, 1fr);
+                    margin-bottom: 12px; }
+      .cols { gap: 16px; }
+      h3 { margin: 10px 0 4px; }
+      /* Keeps the engines table from scrolling at the narrowest side-by-side width. */
+      th, td { padding: 6px 6px; }
+    }
   </style>
   <script>
     // Plotly layout that follows the page's light/dark palette.

@@ -32,6 +32,15 @@ Interactive API docs are generated at <http://localhost:8000/docs>.
 The web app sits outside `src/optpricer` on purpose. The library stays at NumPy
 and SciPy only, and none of this ships in its wheel.
 
+## Screen layout
+
+At 1,600 px wide and above, the pricing and surface panes sit side by side. The
+target is a 1920 × 1080 display, where the page ends 861 px down. That fits a
+maximized browser window, which leaves the page about 940–975 px of height,
+without scrolling. Narrower windows stack the panes, and below 860 px each pane
+becomes a single column. The synthetic-quotes disclosure is a badge in the
+surface heading, so it stays in view in every layout.
+
 ## Design decisions
 
 - **Every route is `def`, not `async def`.** Pricing is CPU-bound NumPy. Inside
@@ -75,6 +84,17 @@ and SciPy only, and none of this ships in its wheel.
   and raises `LocalVolClipWarning` when it does. That warning's text cannot carry
   a count, since it must stay constant to deduplicate, so the page states its own:
   on a steep smile extrapolated to `t = 3`, 4 of 81 points sit at the cap.
+- **htmx attribute settling is off.** By default htmx starts a swapped-in element
+  with the `class` of the element it replaces and restores its own about 20 ms
+  later. That restore removed the `js-plotly-plot` class Plotly had just added,
+  and Plotly's positioning CSS depends on it. As a result, every chart broke
+  after the first input change: layers stacked down the page and the 3D
+  colorbar drifted off the plot. The page sets `attributesToSettle` to `[]`.
+- **The local-vol chart takes the height its notes leave.** Beside the 3D chart,
+  it shrinks when extrapolation or clipping notes appear, so both charts end on
+  the same line and the page does not grow. It is drawn after a zero timeout,
+  because htmx runs a fragment's script before removing the old fragment, which
+  would otherwise still be taking up space when the chart is measured.
 
 ## Measured latency
 

@@ -1,4 +1,4 @@
-<div class="cols">
+<div class="cols wide-first">
   <div>
     <h3>Engines</h3>
     <div class="scroll">
@@ -21,20 +21,24 @@
         </tbody>
       </table>
     </div>
+  </div>
+  <div>
     <h3>Black-Scholes Greeks</h3>
     <div class="scroll">
       <table>
-        <thead><tr>{% for k in ["delta","gamma","vega","theta","rho"] %}<th class="num">{{ k|capitalize }}</th>{% endfor %}</tr></thead>
-        <tbody><tr>{% for k in ["delta","gamma","vega","theta","rho"] %}<td class="num">{{ "%.5f"|format(res.greeks[k]) }}</td>{% endfor %}</tr></tbody>
+        <thead><tr><th>Greek</th><th class="num">Value</th><th>Units</th></tr></thead>
+        <tbody>
+        {% for k, unit in [("delta", "per unit of spot"), ("gamma", "delta per unit of spot"),
+                           ("vega", "per unit of vol"), ("theta", "per year"), ("rho", "per unit of rate")] %}
+          <tr><td>{{ k|capitalize }}</td><td class="num">{{ "%.5f"|format(res.greeks[k]) }}</td><td class="sub">{{ unit }}</td></tr>
+        {% endfor %}
+        </tbody>
       </table>
     </div>
-    <p class="note" style="margin-top:8px">Vega and rho per unit of vol and rate; theta per year.</p>
-  </div>
-  <div>
-    <h3>Price and delta across spot</h3>
-    <div id="ladder-chart" class="chart"></div>
   </div>
 </div>
+<h3>Price and delta across spot</h3>
+<div id="ladder-chart" class="chart"></div>
 <script>
   (function () {
     const L = {{ res.ladder|tojson }};

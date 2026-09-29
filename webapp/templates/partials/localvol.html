@@ -1,8 +1,12 @@
 {% if res.extrapolated %}<p class="warn">t = {{ res.t }} lies outside the quoted expiries, so this slice is extrapolated.<span class="badge">extrapolated</span></p>{% endif %}
 {% for w in res.warnings %}<p class="warn" role="status">{{ w }}</p>{% endfor %}
-<div id="lv-chart" class="chart"></div>
+<div id="lv-chart" class="chart tall"></div>
 <script>
-  (function () {
+  // htmx runs this script as soon as it inserts the new nodes, before it removes the old
+  // ones. The chart's height comes from the space its notes leave, so measuring now would
+  // count the outgoing notes and chart too. The removal finishes in the same task, so a
+  // zero timeout is enough; unlike requestAnimationFrame it still runs in a hidden tab.
+  setTimeout(function () {
     const R = {{ res|tojson }};
     const css = getComputedStyle(document.documentElement);
     Plotly.newPlot("lv-chart", [
@@ -14,5 +18,5 @@
       xaxis: { title: "Spot at t = " + R.t + "y", gridcolor: css.getPropertyValue("--line").trim() },
       yaxis: { title: "Volatility", gridcolor: css.getPropertyValue("--line").trim() },
     }), PLOT_CONFIG);
-  })();
+  }, 0);
 </script>
