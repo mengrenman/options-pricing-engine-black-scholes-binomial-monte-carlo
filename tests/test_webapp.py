@@ -189,9 +189,19 @@ class TestHonestDisplay:
         res = engine.local_vol_slice(s["surface_json"], 100, 0.5, 0.05, 0)
         assert res["clipped"] == 0 and res["warnings"] == []
 
-    def test_clip_bounds_match_the_library(self):
-        """If the library's clip changes, this flags the drift."""
-        from optpricer.calibration import dupire_local_vol
+    def test_clip_bounds_come_from_the_library(self):
+        """The page counts clipped points against the library's own bounds,
+        imported rather than copied, so they cannot drift apart."""
+        from optpricer import calibration
 
-        src = inspect.getsource(dupire_local_vol)
-        assert f"np.clip(sigma_loc, {engine.LOCAL_VOL_FLOOR}, {engine.LOCAL_VOL_CAP})" in src
+        assert engine.LOCAL_VOL_FLOOR is calibration.LOCAL_VOL_FLOOR
+        assert engine.LOCAL_VOL_CAP is calibration.LOCAL_VOL_CAP
+
+    def test_clip_note_is_shown_once(self):
+        """The library now warns too. Its message has no count, so the page keeps
+        its own counted note and drops the library's rather than saying it twice."""
+        s = engine.fit_surface(100, 0.05, 0, 0.2, -0.3, 0.6, 0.02)
+        res = engine.local_vol_slice(s["surface_json"], 100, 3.0, 0.05, 0)
+        clip_notes = [w for w in res["warnings"] if "clamped, not computed" in w]
+        assert len(clip_notes) == 1
+        assert f"of {len(res['local_vol'])} points" in clip_notes[0]

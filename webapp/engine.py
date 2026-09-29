@@ -24,7 +24,14 @@ import warnings
 import numpy as np
 
 import optpricer as op
-from optpricer.calibration import VolSurface, dupire_local_vol, fit_svi_surface
+from optpricer.calibration import (
+    LOCAL_VOL_CAP,
+    LOCAL_VOL_FLOOR,
+    LocalVolClipWarning,
+    VolSurface,
+    dupire_local_vol,
+    fit_svi_surface,
+)
 from optpricer.pde import fd_price
 
 # ---------------------------------------------------------------------------
@@ -42,10 +49,6 @@ SURFACE_STRIKES = 21
 
 MC_SEED = 12345   # fixed, so the MC price moves smoothly as inputs change
 
-# dupire_local_vol clips its output to [0.01, 5.0] without warning.  Points at
-# either bound are clamped, not computed, so the page must say so.
-LOCAL_VOL_FLOOR = 0.01
-LOCAL_VOL_CAP = 5.0
 
 
 class InputError(ValueError):
@@ -224,7 +227,11 @@ def local_vol_slice(surface_json, S0, t, r, q) -> dict:
             lv = np.atleast_1d(dupire_local_vol(surface, spots, t, r, q))
         except ValueError as exc:
             raise InputError(str(exc)) from exc
-    notes = sorted({str(w.message) for w in caught})
+    # The library raises LocalVolClipWarning with constant text so it dedups, which
+    # means it cannot carry a count. The page states the count itself below, so the
+    # library's version is dropped here rather than shown twice.
+    notes = sorted({str(w.message) for w in caught
+                    if not issubclass(w.category, LocalVolClipWarning)})
     n_cap = int(np.count_nonzero(lv >= LOCAL_VOL_CAP * (1 - 1e-9)))
     n_floor = int(np.count_nonzero(lv <= LOCAL_VOL_FLOOR * (1 + 1e-9)))
     if n_cap or n_floor:
