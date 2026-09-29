@@ -8,10 +8,10 @@ A comprehensive options pricing library with **five independent pricing engines*
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/webapp-dark.png">
-  <img src="docs/images/webapp-light.png" alt="The optpricer web prototype at 1920 by 1080. Left pane: one call option priced by Black-Scholes, a binomial tree (European and American), Monte Carlo and finite differences, with its Black-Scholes Greeks and price and delta plotted across spot. Right pane: a 3D implied-volatility surface, a Dupire local-vol chart beside it, and a fit-quality table for each expiry.">
+  <img src="docs/images/webapp-light.png" alt="The optpricer web prototype in a 1920 by 1080 window. Left pane: one call option priced by Black-Scholes, a binomial tree (European and American), Monte Carlo and finite differences, with its Black-Scholes Greeks and price and delta plotted across spot. Right pane: a 3D implied-volatility surface, a Dupire local-vol chart beside it, and a fit-quality table for each expiry.">
 </picture>
 
-<p align="center"><em>The <a href="#web-prototype">web prototype</a> at 1920 × 1080: Black-Scholes, binomial, Monte Carlo and finite-difference prices for one contract, and an SVI surface with its Dupire local vol. The quotes are synthetic.</em></p>
+<p align="center"><em>The <a href="#web-prototype">web prototype</a> in a 1920 × 1080 window: Black-Scholes, binomial, Monte Carlo and finite-difference prices for one contract, and an SVI surface with its Dupire local vol. The quotes are synthetic.</em></p>
 
 ---
 
@@ -28,7 +28,7 @@ A comprehensive options pricing library with **five independent pricing engines*
 | **Finite Element (FEM)** | `fem.py` | 1D Galerkin with linear hat functions, consistent mass + stiffness matrices |
 
 <p align="center">
-  <img src="docs/images/american-vs-european-put.png" width="880" alt="Two line charts over strikes 70 to 130. Left: European and American put prices, close together at low strikes and reaching about 27 and 30 at strike 130. Right: the American minus European price, rising steadily from 0 to about 3.">
+  <img src="docs/images/american-vs-european-put.png" width="880" alt="Two line charts over strikes 70 to 130. Left: European and American put prices, close together at low strikes and reaching about 27 and 30 at strike 130. Right: the American minus European price, rising at an accelerating rate from 0 to about 3.">
   <br><em>Finite-difference prices of European and American puts across strikes, for spot 100, one year to expiry, r = 5%, q = 2% and σ = 20%. The early-exercise premium grows with the strike to 3.03 at K = 130, where the American put is worth exactly its intrinsic value. From <a href="notebooks/04_PDE_Finite_Difference.ipynb">notebook 04</a>.</em>
 </p>
 
@@ -213,7 +213,7 @@ python -m pip install -e ".[web]"
 uvicorn webapp.main:app --reload
 ```
 
-The screenshot at the top of this README shows it at 1920 × 1080. See [`webapp/README.md`](webapp/README.md) for the design and the JSON API.
+The screenshot at the top of this README shows it in a 1920 × 1080 window. See [`webapp/README.md`](webapp/README.md) for the design and the JSON API.
 
 ---
 
