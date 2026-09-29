@@ -2,9 +2,9 @@
 {% block content %}
 <section class="panel">
   <h2>Price an option <span class="spin" id="price-spin">computing…</span></h2>
-  <p class="note">Five engines on one contract, compared with Black-Scholes in basis points of price.
-    The American binomial price can sit higher because it allows early exercise, which for a call has
-    value only when the stock pays a dividend or the rate is negative.</p>
+  <p class="note">Black-Scholes, a binomial tree, Monte Carlo and finite differences price one
+    contract, compared with Black-Scholes in basis points. The tree's American price can sit higher
+    because it allows early exercise; for a call, that has value only with a dividend or a negative rate.</p>
   <form class="inputs" hx-post="/ui/price" hx-target="#price-result"
         hx-trigger="load, input delay:250ms" hx-indicator="#price-spin">
     <label>Spot <input name="S0" value="{{ d.S0 }}" inputmode="decimal"></label>

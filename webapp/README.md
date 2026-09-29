@@ -1,8 +1,9 @@
 # optpricer web prototype
 
 A FastAPI + HTMX front end for `optpricer`, with Plotly for charts. It prices one
-contract with all five engines, calibrates an SVI surface, and draws Dupire local
-volatility from it. Every input change recomputes on the server.
+contract with Black-Scholes, a binomial tree, Monte Carlo and finite differences,
+calibrates an SVI surface, and draws Dupire local volatility from it. Every input
+change recomputes on the server.
 
 This is a **prototype**. The volatility surface is calibrated to *synthetic*
 quotes from a parametric smile, standing in for market data.
@@ -105,7 +106,7 @@ near 250 the same requests took roughly twice as long.
 | Request | Median | 90th percentile |
 |---|---|---|
 | Page load | 2 ms | 3 ms |
-| Price fragment, all five engines | 33 ms | 74 ms |
+| Price fragment, all four engines | 33 ms | 74 ms |
 | Local vol from a client-held surface | 4 ms | 8 ms |
 | Surface calibration fragment | 166 ms | 204 ms |
 | JSON price API | 36 ms | 49 ms |
@@ -118,7 +119,7 @@ debounces input by 400 ms instead of 250 ms.
 | Method and path | Body | Returns |
 |---|---|---|
 | `GET /api/health` | none | `{"status": "ok"}` |
-| `POST /api/price` | `S0, K, T, sigma`, optional `r, q, kind, mc_paths` | prices from all five engines and Black-Scholes Greeks |
+| `POST /api/price` | `S0, K, T, sigma`, optional `r, q, kind, mc_paths` | prices from all four engines (the tree both European and American) and Black-Scholes Greeks |
 | `POST /api/surface/fit` | smile parameters, all optional | a serialized `VolSurface` and per-slice fit error |
 | `POST /api/surface/localvol` | `surface` (as returned above), `S0, t`, optional `r, q` | local and implied vol across spot |
 
@@ -128,3 +129,4 @@ debounces input by 400 ms instead of 250 ms.
 - HTMX and Plotly.js come from CDNs, pinned to exact versions.
 - No authentication, rate limiting or deployment configuration.
 - American pricing appears only in the binomial row; the other engines are European.
+- The library's fifth engine, finite elements, is not in the app.

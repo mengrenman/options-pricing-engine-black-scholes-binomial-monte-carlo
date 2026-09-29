@@ -146,7 +146,8 @@ def _binomial_row(opt, kind: str, american: bool) -> dict:
 
 
 def price_all(S0, K, T, r, q, sigma, kind, mc_paths=DEFAULT_MC_PATHS) -> dict:
-    """Price one contract with every engine, plus Greeks and a spot ladder."""
+    """Price one contract with Black-Scholes, the binomial tree (European and
+    American), Monte Carlo and finite differences, plus Greeks and a spot ladder."""
     S0, K, T, r, q, sigma, kind = validate_option(S0, K, T, r, q, sigma, kind)
     mc_paths = int(_check_range(parse_float(mc_paths, "Monte Carlo paths"),
                                 "Monte Carlo paths", 1_000, MAX_MC_PATHS))
