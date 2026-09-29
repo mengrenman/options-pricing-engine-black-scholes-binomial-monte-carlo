@@ -8,9 +8,14 @@
         {% for e in res.engines %}
           <tr>
             <td>{{ e.name }}</td>
+            {% if e.price is none %}
+            <td class="num">–</td><td class="num">–</td>
+            <td class="sub"><span class="warn">Unavailable: {{ e.unavailable }}</span></td>
+            {% else %}
             <td class="num">{{ "%.6f"|format(e.price) }}{% if e.stderr is defined %}<br><span class="sub">± {{ "%.6f"|format(e.stderr) }}</span>{% endif %}</td>
             <td class="num">{% if e.diff_bps is none %}–{% else %}{{ "%+.1f"|format(e.diff_bps) }}{% endif %}</td>
             <td class="sub">{{ e.note }}</td>
+            {% endif %}
           </tr>
         {% endfor %}
         </tbody>

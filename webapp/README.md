@@ -37,32 +37,50 @@ and SciPy only, and none of this ships in its wheel.
 - **Every route is `def`, not `async def`.** Pricing is CPU-bound NumPy. Inside
   `async def` it would run on the event loop and stall every other request;
   FastAPI runs plain `def` routes in a thread pool.
+- **No `warnings.catch_warnings`.** It swaps process-wide state, and because the
+  routes run on a thread pool, concurrent requests could corrupt warning
+  handling for the whole server. The page computes its notes from the data; the
+  library's own warnings go to the server log. The app labels the surfaces it
+  fits, so that log line appears once per process rather than once per request.
 - **Monte Carlo runs serially.** `n_workers > 1` starts a process pool per
   request, which costs roughly 0.7–0.9 s on macOS and needs an
   `if __name__ == "__main__"` guard that web workers do not provide.
-- **Every size parameter is capped** (Monte Carlo paths, surface payload bytes,
-  slice count), so one request cannot hang a worker.
-- **Expiry must be strictly positive.** `bs_price_vec` returns NaN at `T = 0`
-  instead of raising, so the check happens before the library is called.
-- **Bad input in a fragment returns status 200 with an inline error.** HTMX does
-  not swap 4xx responses, so a 400 would look like nothing happened. The JSON
-  API returns a proper 400.
+- **Request bodies are capped at 1 MB before FastAPI parses them.** Without this,
+  a 50 MB JSON body cost about 580 MB of memory and several seconds before the
+  surface-size check could refuse it. The limit checks `Content-Length` and, for
+  chunked bodies that have none, reads up to the limit and replays the body.
+- **Inputs have real lower bounds, not just "positive".** A vanishing expiry or
+  volatility sent the binomial tree's `u - d` to zero and crashed the request.
+- **Total volatility `sigma * sqrt(T)` is capped at 4.** Past that the
+  finite-difference grid drifts by tens of basis points, and at 8 Monte Carlo is
+  dozens of standard errors wrong while reporting a tiny standard error. At 10 it
+  returns a price of exactly 0 with a standard error of exactly 0.
+- **Engines fail independently.** If the binomial tree cannot price a contract,
+  its rows say why (it needs `|r - q| * sqrt(T / N) < sigma`) and the other
+  engines still show. Only a Black-Scholes failure fails the request.
+- **Bad input never produces a 500.** In a fragment it returns status 200 with an
+  inline error, because HTMX does not swap 4xx responses; the JSON API returns
+  400 with `{"error": ...}`, including for schema errors FastAPI would otherwise
+  report as 422. Every number returned is checked for finiteness first.
 - **The server keeps no state.** A fitted surface is serialized with
   `VolSurface.to_json` (about 1 KB) into a hidden form field; the local-vol
   request posts it back and the server rehydrates it. Because the client holds
-  it, the payload is treated as untrusted: its size is capped before parsing and
-  `VolSurface.from_json` validates it strictly.
+  it, the payload is treated as untrusted: its size is capped before parsing,
+  and deeply nested JSON or oversized numbers become a clean error.
 - **Charts are sent as data, not images.** The server returns JSON that Plotly
-  draws in the browser. Rendering the same 3D surface with matplotlib cost about
-  100 ms and 208 KB and could not be rotated; as JSON it is about 0.5 ms and 11 KB.
-- **Clipped local vol is flagged.** `dupire_local_vol` clamps its output to
-  `[0.01, 5.0]` without warning. The page counts points at either bound and says
-  they are clamped, not computed. On a steep smile extrapolated to `t = 3`,
-  4 of 81 points hit the cap.
+  draws in the browser, rounded to display precision. Rendering the same 3D
+  surface with matplotlib cost about 100 ms and 208 KB and could not be rotated;
+  as rounded JSON the grid is 11.2 KB (25.9 KB unrounded).
+- **Clipped local vol is counted.** `dupire_local_vol` clamps to `[0.01, 5.0]`
+  and raises `LocalVolClipWarning` when it does. That warning's text cannot carry
+  a count, since it must stay constant to deduplicate, so the page states its own:
+  on a steep smile extrapolated to `t = 3`, 4 of 81 points sit at the cap.
 
 ## Measured latency
 
-End-to-end on localhost, 25 requests each:
+End-to-end HTTP round trips to a live server on localhost, 25 requests each, on
+an otherwise idle machine. They scale with machine load: under a load average
+near 250 the same requests took roughly twice as long.
 
 | Request | Median | 90th percentile |
 |---|---|---|

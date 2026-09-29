@@ -13,6 +13,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
+pytest.importorskip("webapp")   # the sdist ships this file but not webapp/
 
 from fastapi.testclient import TestClient
 
@@ -205,3 +206,142 @@ class TestHonestDisplay:
         clip_notes = [w for w in res["warnings"] if "clamped, not computed" in w]
         assert len(clip_notes) == 1
         assert f"of {len(res['local_vol'])} points" in clip_notes[0]
+
+
+# ---------------------------------------------------------------------------
+# Regressions from the pre-PR adversarial review
+# ---------------------------------------------------------------------------
+class TestReviewRegressions:
+    # --- the one finding rated important -----------------------------------
+    def test_engine_never_swaps_global_warning_state(self):
+        """catch_warnings swaps process-wide state; routes run on a thread pool,
+        so concurrent requests could corrupt warning handling server-wide."""
+        src = inspect.getsource(engine)
+        assert "catch_warnings(" not in src
+
+    def test_concurrent_local_vol_leaves_warning_filters_intact(self, client):
+        import threading
+        import warnings as _w
+
+        before = list(_w.filters)
+        surf = client.post("/api/surface/fit", json={"S0": 100, "r": 0.05}).json()["surface"]
+        errs = []
+
+        def hit():
+            try:
+                for t in (0.5, 3.0):
+                    r = client.post("/api/surface/localvol",
+                                    json={"surface": surf, "S0": 100, "t": t, "r": 0.05})
+                    assert r.status_code == 200
+            except Exception as e:  # noqa: BLE001 - a thread's exception is otherwise lost
+                errs.append(e)
+
+        threads = [threading.Thread(target=hit) for _ in range(8)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        assert not errs
+        assert list(_w.filters) == before
+
+    # --- nothing user-controllable may 500 ---------------------------------
+    @pytest.mark.parametrize("override", [
+        {"T": 1e-30}, {"sigma": 1e-15}, {"S0": 5e-324, "K": 5e-324},
+        {"T": 1e-5}, {"sigma": 1e-4},
+    ])
+    def test_tiny_inputs_are_refused_not_crashed(self, client, override):
+        body = {**BASE, "kind": "call", **override}
+        assert client.post("/api/price", json=body).status_code == 400
+        ui = client.post("/ui/price", data={k: str(v) for k, v in body.items()})
+        assert ui.status_code == 200 and 'role="alert"' in ui.text
+
+    def test_huge_mc_paths_is_a_400(self, client):
+        r = client.post("/api/price", json={**BASE, "kind": "call", "mc_paths": 10**400})
+        assert r.status_code == 400
+
+    def test_deeply_nested_surface_is_a_clean_error(self, client):
+        payload = "[" * 1000 + "]" * 1000                    # 2 KB, RecursionError
+        r = client.post("/ui/localvol", data={"surface": payload, "S0": "100", "t": "0.5",
+                                              "r": "0", "q": "0"})
+        assert r.status_code == 200 and 'role="alert"' in r.text
+
+    def test_oversized_integer_in_surface_is_a_clean_error(self, client):
+        surf = client.post("/api/surface/fit", json={}).json()["surface"]
+        text = json.dumps(surf).replace('"a": ', '"a": ' + "1" + "0" * 310 + ", \"_x\": ", 1)
+        r = client.post("/ui/localvol", data={"surface": text, "S0": "100", "t": "0.5",
+                                              "r": "0", "q": "0"})
+        assert r.status_code == 200 and 'role="alert"' in r.text
+
+    def test_negative_forward_surface_is_a_400_not_an_all_nan_chart(self, client):
+        surf = client.post("/api/surface/fit", json={}).json()["surface"]
+        surf["forward_curve"] = [[T, -100.0] for T, _ in surf["forward_curve"]]
+        r = client.post("/api/surface/localvol", json={"surface": surf, "S0": 100, "t": 0.5})
+        assert r.status_code == 400 and "forward" in r.json()["error"]
+
+    # --- the body limit runs before FastAPI parses anything -----------------
+    def test_oversized_body_is_refused_before_parsing(self, client):
+        r = client.post("/api/surface/localvol", content=b"{" + b" " * 2_000_000 + b"}",
+                        headers={"content-type": "application/json"})
+        assert r.status_code == 413 and "exceeds" in r.json()["error"]
+
+    def test_oversized_chunked_body_is_refused(self, client):
+        def chunks():
+            for _ in range(40):
+                yield b" " * 50_000                          # 2 MB, no Content-Length
+        r = client.post("/api/price", content=chunks(),
+                        headers={"content-type": "application/json"})
+        assert r.status_code == 413
+
+    def test_normal_bodies_pass_the_limit(self, client):
+        assert client.post("/api/price", json={**BASE, "kind": "call"}).status_code == 200
+
+    # --- contract and presentation -----------------------------------------
+    def test_schema_errors_are_400_with_the_documented_shape(self, client):
+        r = client.post("/api/price", json={"S0": "not a number"})
+        assert r.status_code == 400 and "error" in r.json()
+
+    def test_total_volatility_is_capped(self, client):
+        """Past sigma*sqrt(T) of 4 the FD grid drifts by tens of bps and MC can be
+        dozens of standard errors wrong while reporting a tiny standard error."""
+        r = client.post("/api/price", json={**BASE, "kind": "call", "sigma": 5.0, "T": 4.0})
+        assert r.status_code == 400 and "sqrt(expiry)" in r.json()["error"]
+        ok = client.post("/api/price", json={**BASE, "kind": "call", "sigma": 2.0, "T": 4.0})
+        assert ok.status_code == 200
+
+    def test_binomial_failure_no_longer_hides_the_other_engines(self, client):
+        res = client.post("/api/price", json={**BASE, "kind": "call", "T": 10.0,
+                                              "r": 0.5, "sigma": 0.01}).json()
+        assert _engine(res, "Black-Scholes")["price"] is not None
+        amer = _engine(res, "Binomial (American)")
+        assert amer["price"] is None and "needs volatility above" in amer["unavailable"]
+
+    def test_range_message_does_not_round_an_out_of_range_value_into_range(self):
+        with pytest.raises(engine.InputError, match=r"got 30\.0000001"):
+            engine.validate_option(100, 100, 30.0000001, 0.05, 0, 0.2, "call")
+
+    def test_local_vol_time_survives_a_surface_refit(self, client):
+        form = {"S0": "100", "r": "0.03", "q": "0", "atm_vol": "0.2", "skew": "-0.3",
+                "curvature": "0.6", "term_slope": "0.02", "t": "1.75"}
+        assert 'value="1.75"' in client.post("/ui/surface", data=form).text
+
+    def test_spinner_rule_matches_the_indicator_itself(self):
+        import pathlib
+        css = pathlib.Path("webapp/templates/base.html").read_text()
+        assert ".htmx-request.spin" in css
+
+    def test_early_exercise_text_matches_the_numbers(self):
+        """The page says an American call only beats the European with a dividend
+        or a negative rate. Check both directions against the tree."""
+        def premium(r, q):
+            o = op.OptionSpec(S0=100, K=90, T=1.0, r=r, sigma=0.2, q=q)
+            return op.crr(o, op.CALL, N=1000, american=True) - op.crr(o, op.CALL, N=1000)
+        assert abs(premium(0.05, 0.0)) < 1e-9          # no dividend, positive rate: equal
+        assert premium(-0.02, 0.0) > 0.1                # negative rate: early exercise pays
+        assert premium(0.05, 0.03) > 0.0                # dividend below the rate: still pays
+        page = pathlib_text("webapp/templates/index.html")
+        assert "negative" in page and "never for a call on a stock with no dividend" not in page
+
+
+def pathlib_text(path):
+    import pathlib
+    return pathlib.Path(path).read_text()

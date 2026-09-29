@@ -59,7 +59,9 @@
     details { margin-top: 12px; }
     details pre { font: 11px/1.4 var(--mono); max-height: 220px; overflow: auto;
                   background: var(--bg); padding: 10px; border-radius: 6px; }
-    .htmx-request .spin { opacity: 1; }
+    /* hx-indicator adds htmx-request to the indicator element itself, so the
+       descendant form alone never matched and the spinner never showed. */
+    .htmx-request.spin, .htmx-request .spin { opacity: 1; }
     .spin { opacity: 0; transition: opacity .15s; color: var(--muted); font-size: 12px; margin-left: 8px; }
   </style>
   <script>

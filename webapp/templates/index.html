@@ -3,8 +3,9 @@
 <section class="panel">
   <h2>Price an option <span class="spin" id="price-spin">computing…</span></h2>
   <p class="note">Five engines on one contract, with differences from Black-Scholes in basis points of
-    price. The American binomial price can sit above the rest because it allows early exercise, which
-    pays for puts but never for a call on a stock with no dividend, so there the two match.</p>
+    price. The American binomial price can sit above the rest because it allows early exercise. For a
+    call that only happens when the stock pays a dividend or the rate is negative; with no dividend and
+    a non-negative rate the American and European calls match.</p>
   <form class="inputs" hx-post="/ui/price" hx-target="#price-result"
         hx-trigger="load, input delay:250ms" hx-indicator="#price-spin">
     <label>Spot <input name="S0" value="{{ d.S0 }}" inputmode="decimal"></label>
@@ -29,7 +30,7 @@
     smile, standing in for market data. The fitted surface travels back to the browser as JSON, so the
     local-vol request below it carries its own surface and the server keeps no state.</p>
   <form class="inputs" hx-post="/ui/surface" hx-target="#surface-result"
-        hx-trigger="load, input delay:400ms" hx-indicator="#surface-spin">
+        hx-trigger="load, input delay:400ms" hx-indicator="#surface-spin" hx-include="#lv-t">
     <label>Spot <input name="S0" value="{{ d.S0 }}" inputmode="decimal"></label>
     <label>Rate <input name="r" value="{{ d.r }}" inputmode="decimal"></label>
     <label>Dividend yield <input name="q" value="{{ d.q }}" inputmode="decimal"></label>
