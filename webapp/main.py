@@ -143,9 +143,11 @@ def index(request: Request):
 @app.post("/ui/price", response_class=HTMLResponse)
 def ui_price(request: Request, S0: str = Form(""), K: str = Form(""), T: str = Form(""),
              r: str = Form(""), q: str = Form(""), sigma: str = Form(""),
-             kind: str = Form("call")):
+             kind: str = Form("call"), solve: str = Form("price")):
+    # In "Solve for: Implied vol" mode the volatility field holds the market price.
     try:
-        result = engine.price_all(S0, K, T, r, q, sigma, kind)
+        vol, market_price = engine.vol_source(solve, sigma)
+        result = engine.price_all(S0, K, T, r, q, vol, kind, market_price=market_price)
     except engine.InputError as exc:
         return _error(request, str(exc))
     return templates.TemplateResponse(request, "partials/pricing.html", {"res": result})
@@ -154,12 +156,25 @@ def ui_price(request: Request, S0: str = Form(""), K: str = Form(""), T: str = F
 @app.post("/ui/ladder", response_class=HTMLResponse)
 def ui_ladder(request: Request, S0: str = Form(""), K: str = Form(""), T: str = Form(""),
               r: str = Form(""), q: str = Form(""), sigma: str = Form(""),
-              kind: str = Form("call")):
+              kind: str = Form("call"), solve: str = Form("price")):
     try:
-        result = engine.spot_ladder(S0, K, T, r, q, sigma, kind)
+        vol, market_price = engine.vol_source(solve, sigma)
+        result = engine.spot_ladder(S0, K, T, r, q, vol, kind, market_price=market_price)
     except engine.InputError as exc:
         return _error(request, str(exc))
     return templates.TemplateResponse(request, "partials/ladder.html", {"res": result})
+
+
+@app.post("/ui/scenarios", response_class=HTMLResponse)
+def ui_scenarios(request: Request, S0: str = Form(""), K: str = Form(""), T: str = Form(""),
+                 r: str = Form(""), q: str = Form(""), sigma: str = Form(""),
+                 kind: str = Form("call"), solve: str = Form("price")):
+    try:
+        vol, market_price = engine.vol_source(solve, sigma)
+        result = engine.scenario_grid(S0, K, T, r, q, vol, kind, market_price=market_price)
+    except engine.InputError as exc:
+        return _error(request, str(exc))
+    return templates.TemplateResponse(request, "partials/scenarios.html", {"res": result})
 
 
 @app.post("/ui/surface", response_class=HTMLResponse)
@@ -199,7 +214,8 @@ class PriceRequest(BaseModel):
     T: float
     r: float = 0.0
     q: float = 0.0
-    sigma: float
+    sigma: float | None = None         # exactly one of sigma and market_price
+    market_price: float | None = None  # solves the implied vol, then prices at it
     kind: str = "call"
     mc_paths: float = engine.DEFAULT_MC_PATHS   # float: the engine range-checks it
 
@@ -230,8 +246,9 @@ def api_health():
 @app.post("/api/price")
 def api_price(req: PriceRequest):
     res = engine.price_all(req.S0, req.K, req.T, req.r, req.q, req.sigma, req.kind,
-                           mc_paths=req.mc_paths)
+                           mc_paths=req.mc_paths, market_price=req.market_price)
     res.pop("ladder")
+    res.pop("rows")     # the table's layout of "engines"; the flat list is the API
     return res
 
 
