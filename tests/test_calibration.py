@@ -850,6 +850,18 @@ class TestSerialization:
         offenders = [p.name for p in src.glob("*.py") if "open(" in p.read_text()]
         assert not offenders, f"file I/O appeared in {offenders}"
 
+    def test_oversized_integer_is_a_value_error(self):
+        """JSON integers are unbounded; a 310-digit literal parses to a Python int
+        that float() cannot hold. It used to escape as OverflowError, breaking
+        the one-exception-type contract every other bad payload keeps."""
+        big = "1" + "0" * 310
+        payload = (
+            '{"schema":"optpricer.volsurface","version":1,"label":null,"slices":'
+            f'[{{"a":{big},"b":0.1,"rho":0.0,"m":0.0,"sigma":0.1,"expiry":1.0}}],'
+            '"forward_curve":[]}'
+        )
+        with pytest.raises(ValueError, match="too large"):
+            VolSurface.from_json(payload)
 
 # ---------------------------------------------------------------------------
 # Clipping is reported, not silent
