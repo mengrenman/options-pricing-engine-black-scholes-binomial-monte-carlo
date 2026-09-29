@@ -1,5 +1,8 @@
-{% macro money(v) %}{% if v is none %}–{% else %}{{ "%.4f"|format(v) }}{% endif %}{% endmacro %}
-{% macro greek(v, why) %}{% if v is none %}<span title="{{ why }}">–</span>{% else %}{{ "%.5f"|format(v) }}{% endif %}{% endmacro %}
+{# fixed() and signed(): a value that rounds to zero prints as 0.00000 (or 0.0), never -0.00000 or +0.0. #}
+{% macro fixed(v, digits) %}{% set s = ("%." ~ digits ~ "f")|format(v) %}{{ s.lstrip("-") if not s.strip("-0.") else s }}{% endmacro %}
+{% macro signed(v, digits) %}{% set s = ("%+." ~ digits ~ "f")|format(v) %}{{ s.lstrip("+-") if not s.strip("+-0.") else s }}{% endmacro %}
+{% macro money(v) %}{% if v is none %}–{% else %}{{ fixed(v, 4) }}{% endif %}{% endmacro %}
+{% macro greek(v, why, note="") %}{% if v is none %}<span title="{{ note or why }}">–</span>{% elif note %}<span title="{{ note }}">{{ fixed(v, 5) }}</span>{% else %}{{ fixed(v, 5) }}{% endif %}{% endmacro %}
 {% if res.implied_vol %}
 <p class="iv-line" title="The Black-Scholes (European) volatility that reproduces the market price; every engine, Greek and view below uses it.">Implied vol <strong>{{ "%.2f"|format(res.implied_vol.sigma * 100) }}%</strong> (vega {{ "%.1f"|format(res.implied_vol.vega) }}){% if res.implied_vol.weak %} <span class="warn" title="A tiny change in the market price moves the solved volatility a lot.">Low vega</span>{% endif %}</p>
 {% endif %}
@@ -17,8 +20,8 @@
             {% if e.price is none %}
             <td class="num">–</td><td class="num">–</td>
             {% else %}
-            <td class="num">{{ "%.6f"|format(e.price) }}{% if e.stderr is defined %}<span class="stack">± {{ "%.6f"|format(e.stderr) }}</span>{% if e.z is not none %}<span class="stack{% if e.z|abs > 3 %} warn{% endif %}" title="(Monte Carlo − Black-Scholes) / standard error">z = {{ "%+.1f"|format(e.z) }}</span>{% endif %}{% endif %}</td>
-            <td class="num">{% if e.diff_bps is none %}–{% else %}{{ "%+.1f"|format(e.diff_bps) }}{% endif %}</td>
+            <td class="num">{{ "%.6f"|format(e.price) }}{% if e.stderr is defined %}<span class="stack"{% if e.z is none and e.z_note %} title="{{ e.z_note }}"{% endif %}>± {{ "%.6f"|format(e.stderr) }}</span>{% if e.z is not none %}<span class="stack{% if e.z|abs > 3 %} warn{% endif %}" title="(Monte Carlo − Black-Scholes) / standard error">z = {{ "%+.1f"|format(e.z) }}</span>{% endif %}{% endif %}</td>
+            <td class="num">{% if e.diff_bps is none %}–{% else %}{{ signed(e.diff_bps, 1) }}{% endif %}</td>
             {% endif %}
             <td class="num">{% if am is none %}–{% elif am.price is none %}<span title="{{ am.unavailable }}">–</span>{% else %}{{ "%.6f"|format(am.price) }}{% endif %}</td>
             <td class="sub"{% if e.detail %} title="{{ e.detail }}"{% endif %}>{% if e.price is none %}<span class="warn">Unavailable: {{ e.unavailable }}</span>{% else %}{{ e.note }}{% endif %}</td>
@@ -39,9 +42,9 @@
                            ("vega", "per unit of vol"), ("theta", "per year"), ("rho", "per unit of rate")] %}
           <tr>
             <td title="{{ unit }}">{{ k|capitalize }}</td>
-            <td class="num">{{ "%.5f"|format(res.greeks[k]) }}</td>
+            <td class="num">{{ fixed(res.greeks[k], 5) }}</td>
             <td class="num">{{ greek(res.greeks_fd.european[k], "One solve gives delta, gamma and theta only; see the Black-Scholes column." if k in ("vega", "rho") else "The finite-difference solve is unavailable; see the Engines table.") }}</td>
-            <td class="num">{{ greek(res.greeks_fd.american[k], ("Not computed: " ~ res.american_vega_rho_unavailable) if k in ("vega", "rho") and res.american_vega_rho_unavailable else "The American finite-difference solve is unavailable; see the Engines table.") }}</td>
+            <td class="num">{{ greek(res.greeks_fd.american[k], ("Not computed: " ~ res.american_vega_rho_unavailable) if k in ("vega", "rho") and res.american_vega_rho_unavailable else "The American finite-difference solve is unavailable; see the Engines table.", res.greeks_fd.american.rho_note if k == "rho" else "") }}</td>
           </tr>
         {% endfor %}
         </tbody>

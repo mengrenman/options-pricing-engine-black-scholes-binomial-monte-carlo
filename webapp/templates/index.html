@@ -60,7 +60,7 @@
         label.textContent = iv ? "Market price" : "Volatility";
         if (iv && !kept.iv) {
           const px = blackScholes(parseFloat(kept.price));
-          kept.iv = isFinite(px) ? px.toFixed(4) : "";
+          kept.iv = isFinite(px) ? px.toPrecision(6) : "";   // significant digits: a price under 5e-5 must not round to 0
         }
         box.value = kept[mode.value];
       });
@@ -82,7 +82,7 @@
        hx-target="find .view-body" hx-indicator="#price-spin" aria-live="polite">
     <div class="scen-bar">
       <label>Rate shock <select id="scen-rate" onchange="if (window.scenDraw) window.scenDraw()"></select></label>
-      <span>P&amp;L against the base price. The ring marks the base case.</span>
+      <span title="Black-Scholes (European) P&amp;L against the base price, at the shocked spot, volatility and rate. The ring marks the base case. It ignores early exercise, so an American put's P&amp;L can differ.">Black-Scholes (European) P&amp;L against the base price. The ring marks the base case.</span>
     </div>
     <div class="view-body"></div>
   </div>

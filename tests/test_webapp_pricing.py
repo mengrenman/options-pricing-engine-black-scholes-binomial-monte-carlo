@@ -8,6 +8,8 @@ import json
 import math
 import pathlib
 import re
+import shutil
+import subprocess
 
 import numpy as np
 import pytest
@@ -55,6 +57,27 @@ def _table(frag, cls):
 
 def _price_fragment(client, **override):
     return client.post("/ui/price", data={**FORM, "kind": "call", **override}).text
+
+
+def _tree_price(args, kind):
+    """American CRR price, 4000 steps, averaged over N and N + 1: the lattice oscillates with the
+    parity of the step count."""
+    S0, K, T, r, q, s = args
+    opt = op.OptionSpec(S0=S0, K=K, T=T, r=r, q=q, sigma=s)
+    return 0.5 * (op.crr(opt, kind, N=4000, american=True) + op.crr(opt, kind, N=4001, american=True))
+
+
+def _tree_vega_rho(args, kind):
+    """Vega and rho of the fine tree by central differences, Richardson-extrapolated in the bump so
+    the h^2 term cancels and the reference does not share the app's bump error."""
+    def slope(index, h):
+        up, dn = list(args), list(args)
+        up[index] += h
+        dn[index] -= h
+        return (_tree_price(up, kind) - _tree_price(dn, kind)) / (2 * h)
+
+    hs, hr = 0.02 * args[5], 0.001
+    return (4 * slope(5, hs / 2) - slope(5, hs)) / 3, (4 * slope(3, hr / 2) - slope(3, hr)) / 3
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +145,9 @@ class TestGridRule:
         g = engine.fd_grid(*args)
         assert sorted(n for n, _, _ in calls) == ["fd_greeks"] * 2 + ["fd_price"] * 4 + ["fem_price"]
         for name, a, kw in calls:
-            assert kw["N_S"] == g["N_S"] and kw["N_t"] == g["N_t"]
+            # the four bumped solves behind the American vega and rho take half the time steps
+            assert kw["N_S"] == g["N_S"]
+            assert kw["N_t"] == (engine.FD_BUMP_N_T if name == "fd_price" else g["N_t"])
             # the range in log spot is the helper's, also for the volatility-bumped solves
             assert a[0].sigma * kw["S_max_mult"] == pytest.approx(0.12 * g["S_max_mult"], rel=1e-12)
 
@@ -240,6 +265,35 @@ class TestEnginesTable:
         monkeypatch.setattr(engine.op, "euro_price_mc", lambda *a, **k: (0.0, 0.0))
         assert _entry(engine.price_all(*ARGS, "call"), "Monte Carlo")["z"] is None
 
+    @pytest.mark.parametrize("kind,K", [("call", 73.0), ("put", 138.0)])
+    def test_deep_in_the_money_monte_carlo_is_not_flagged_for_being_too_exact(self, client, kind, K):
+        """Five total volatilities in the money, every path ends in the money and the control
+        variate absorbs the payoff: the standard error is 3e-9 while the price agrees with
+        Black-Scholes to 1e-8 relative. z came out at -63 and -89 there, and the warn style
+        marked an accurate price as a failure."""
+        res = engine.price_all(100.0, K, 0.1, 0.05, 0.0, 0.2, kind)
+        mc, bs = _entry(res, "Monte Carlo"), _entry(res, "Black-Scholes")
+        assert abs(mc["price"] / bs["price"] - 1) < 1e-7           # the price is accurate ...
+        assert mc["stderr"] < engine.MC_SE_FLOOR * bs["price"]      # ... and the error bar is not
+        assert mc["z"] is None and "control variate" in mc["z_note"]
+        frag = _price_fragment(client, K=str(K), T="0.1", kind=kind)
+        assert "z =" not in frag and 'class="stack warn"' not in frag
+        assert re.search(r'<span class="stack" title="No z: the standard error is below 1e-07 of the '
+                         r'price[^"]*">± 0\.000000</span>', frag)
+
+    def test_z_is_kept_while_the_standard_error_is_resolved(self, monkeypatch):
+        bs = float(op.bs_price(op.OptionSpec(S0=100, K=100, T=1, r=0.05, sigma=0.2), "call"))
+        floor = engine.MC_SE_FLOOR
+        monkeypatch.setattr(engine.op, "euro_price_mc", lambda *a, **k: (bs * (1 + 1e-3), bs * floor * 10))
+        mc = _entry(engine.price_all(*ARGS, "call"), "Monte Carlo")
+        assert mc["z"] == pytest.approx(1e-3 / (floor * 10), rel=1e-6) and mc["z_note"] is None
+        monkeypatch.setattr(engine.op, "euro_price_mc", lambda *a, **k: (bs * (1 + 1e-3), bs * floor / 10))
+        assert _entry(engine.price_all(*ARGS, "call"), "Monte Carlo")["z"] is None
+
+    def test_a_typical_contract_still_shows_its_z_without_a_note(self):
+        mc = _entry(engine.price_all(*ARGS, "call"), "Monte Carlo")
+        assert mc["z"] is not None and mc["z_note"] is None and abs(mc["z"]) < 3
+
     def test_a_failing_engine_does_not_hide_the_others(self, client, monkeypatch):
         def boom(*a, **k):
             raise ValueError("solver blew up")
@@ -282,6 +336,25 @@ class TestApiCompatibility:
         assert _entry(res, "Black-Scholes")["price"] == op.bs_price(opt, "call")
         assert _entry(res, "Finite difference")["price"] == fd_price(opt, "call", N_S=400, N_t=400)
         assert _entry(res, "Binomial (American)")["price"] == op.crr(opt, "call", N=500, american=True)
+
+    def test_the_new_notes_are_fields_of_the_json(self, client):
+        res = client.post("/api/price", json={**BASE, "kind": "call"}).json()
+        assert _entry(res, "Monte Carlo")["z_note"] is None
+        assert res["greeks_fd"]["american"]["rho_note"] is None
+        deep = client.post("/api/price", json={"S0": 100, "K": 73, "T": 0.1, "r": 0.05, "sigma": 0.2,
+                                               "kind": "call"}).json()
+        mc = _entry(deep, "Monte Carlo")
+        assert mc["z"] is None and "control variate" in mc["z_note"]
+        zero = client.post("/api/price", json={**BASE, "r": 0.0, "kind": "put"}).json()
+        assert zero["greeks_fd"]["american"]["rho_note"].startswith("One-sided")
+        high = client.post("/api/price", json={**BASE, "T": 4.0, "sigma": 1.5, "kind": "call"}).json()
+        assert high["greeks_fd"]["american"]["vega"] is None and "2.5" in high["american_vega_rho_unavailable"]
+
+    def test_the_error_text_for_a_missing_volatility_changed_but_stays_a_400(self, client):
+        """Clients that matched on the old text 'sigma: Field required' need the new one."""
+        r = client.post("/api/price", json={"S0": 100, "K": 100, "T": 1, "kind": "call"})
+        assert r.status_code == 400
+        assert r.json()["error"] == "Give a volatility (sigma) or a market price (market_price)."
 
     def test_response_is_strict_json(self, client):
         r = client.post("/api/price", json={**BASE, "kind": "put"})
@@ -333,23 +406,128 @@ class TestGreeksTable:
         ((100.0, 100.0, 1.0, 0.05, 0.0, 0.2), "put"),
         ((100.0, 110.0, 1.0, 0.04, 0.0, 0.25), "put"),
         ((100.0, 95.0, 0.75, 0.02, 0.05, 0.3), "call"),
+        ((100.0, 90.0, 1.0, 0.05, 0.0, 0.05), "put"),       # a fixed 0.01 bump was 38% off here
     ])
     def test_american_vega_and_rho_match_a_fine_tree(self, args, kind):
-        """Central differences of the American grid price, grid held fixed, against central
-        differences of a 4000-step tree: within 1 percent (measured within 0.2)."""
-        S0, K, T, r, q, s = args
-        res = engine.price_all(*args, kind)
-
-        def tree(**bump):
-            p = {"S0": S0, "K": K, "T": T, "r": r, "sigma": s, "q": q} | bump
-            return op.crr(op.OptionSpec(**p), kind, N=4000, american=True)
-
-        hs, hr = 0.01, 0.001
-        vega = (tree(sigma=s + hs) - tree(sigma=s - hs)) / (2 * hs)
-        rho = (tree(r=r + hr) - tree(r=r - hr)) / (2 * hr)
-        got = res["greeks_fd"]["american"]
+        """The American grid price, bumped and differenced, against a 4000-step tree whose bumps
+        are Richardson-extrapolated, so the reference does not share the app's own bump error:
+        within 1 percent (measured within 0.3)."""
+        vega, rho = _tree_vega_rho(args, kind)
+        got = engine.price_all(*args, kind)["greeks_fd"]["american"]
         assert got["vega"] == pytest.approx(vega, rel=0.01)
         assert got["rho"] == pytest.approx(rho, rel=0.01)
+
+    @pytest.mark.parametrize("args", [
+        (100, 100, 1.0, 0.03, 0.0, 0.02),       # the fixed +/-0.01 bump was 359 to 6 percent
+        (100, 100, 5.0, 0.03, 0.0, 0.02),       # off on these
+        (100, 100, 0.25, 0.03, 0.0, 0.02),
+        (100, 120, 1.0, 0.03, 0.0, 0.05),
+        (100, 80, 5.0, 0.03, 0.0, 0.05),
+        (100, 150, 5.0, 0.03, 0.0, 0.05),
+        (100, 100, 1.0, 0.03, 0.0, 0.10),
+        (100, 103.045, 1.0, 0.03, 0.0, 0.005),  # at the forward, volatility half a percent
+    ])
+    def test_american_vega_is_exact_where_there_is_no_early_exercise(self, args):
+        """A call with no dividend and r >= 0 is never exercised early, so the American price is
+        the European one and Black-Scholes vega and rho are the exact derivatives to compare with."""
+        res = engine.price_all(*args, "call")
+        assert res["greeks_fd"]["american"]["vega"] == pytest.approx(res["greeks"]["vega"], rel=0.01)
+        assert res["greeks_fd"]["american"]["rho"] == pytest.approx(res["greeks"]["rho"], rel=0.01)
+
+    def test_american_put_without_early_exercise_matches_black_scholes(self):
+        res = engine.price_all(100, 110, 1.0, -0.02, 0.0, 0.05, "put")          # r < 0, q = 0
+        fd, bs = res["greeks_fd"]["american"], res["greeks"]
+        assert fd["vega"] == pytest.approx(bs["vega"], rel=0.01)
+        assert fd["rho"] == pytest.approx(bs["rho"], rel=0.01)
+
+    def test_vega_bump_is_proportional_to_sigma_and_capped(self, monkeypatch):
+        seen = []
+        real = engine.fd_price
+        monkeypatch.setattr(engine, "fd_price", lambda opt, *a, **k: seen.append(opt.sigma) or real(opt, *a, **k))
+        for sigma, half in ((0.05, 0.001), (0.2, 0.004), (0.8, 0.01)):
+            seen.clear()
+            engine.price_all(100, 100, 1.0, 0.05, 0.0, sigma, "put")
+            bumped = sorted(x for x in seen if x != sigma)
+            assert bumped[0] == pytest.approx(sigma - half) and bumped[-1] == pytest.approx(sigma + half)
+
+    def test_the_four_bump_solves_take_half_the_time_steps(self, monkeypatch):
+        steps = []
+        real = engine.fd_price
+        monkeypatch.setattr(engine, "fd_price", lambda *a, **k: steps.append(k["N_t"]) or real(*a, **k))
+        engine.price_all(*ARGS, "put")
+        assert steps == [engine.FD_BUMP_N_T] * 4 and engine.FD_BUMP_N_T == 200
+
+    # --- rho at a zero rate -------------------------------------------------
+    def test_rho_of_a_no_dividend_call_at_zero_rate_is_the_black_scholes_slope(self):
+        """At r = 0 a call gains early exercise only for r < 0, so the American price has a kink in
+        r there. A central difference averaged the two slopes and was 3.7 percent off."""
+        res = engine.price_all(100, 100, 1.0, 0.0, 0.0, 0.2, "call")
+        fd = res["greeks_fd"]["american"]
+        assert fd["rho"] == pytest.approx(res["greeks"]["rho"], rel=0.005)
+        assert fd["rho_note"].startswith("One-sided slope, for r ≥ 0")
+
+    def test_rho_of_a_put_at_zero_rate_is_the_slope_on_the_early_exercise_side(self):
+        """A put gains early exercise for r > 0. Its up-slope is -49.8 by a 4000-step tree
+        (second-order, same step), against -54.1 for the down-slope and Black-Scholes."""
+        res = engine.price_all(100, 100, 1.0, 0.0, 0.0, 0.2, "put")
+        hr = 0.001
+        v = [_tree_price((100.0, 100.0, 1.0, r, 0.0, 0.2), "put") for r in (0.0, hr, 2 * hr)]
+        up = (-3 * v[0] + 4 * v[1] - v[2]) / (2 * hr)
+        got = res["greeks_fd"]["american"]["rho"]
+        assert got == pytest.approx(up, rel=0.01)
+        assert abs(got / res["greeks"]["rho"] - 1) > 0.05                       # not the BS slope
+
+    def test_a_small_negative_rate_uses_the_down_slope(self):
+        res = engine.price_all(100, 100, 1.0, -0.0004, 0.0, 0.2, "put")         # no early exercise below 0
+        fd = res["greeks_fd"]["american"]
+        assert fd["rho"] == pytest.approx(res["greeks"]["rho"], rel=0.005)
+        assert fd["rho_note"].startswith("One-sided slope, for r ≤ 0")
+
+    def test_away_from_zero_rho_is_central_with_no_note(self, monkeypatch):
+        n = []
+        real = engine.fd_price
+        monkeypatch.setattr(engine, "fd_price", lambda *a, **k: n.append(1) or real(*a, **k))
+        assert engine.price_all(*ARGS, "put")["greeks_fd"]["american"]["rho_note"] is None
+        assert len(n) == 4                                  # two for vega, two for rho
+        n.clear()
+        engine.price_all(100, 100, 1.0, 0.0, 0.0, 0.2, "put")
+        assert len(n) == 5                                  # the one-sided slope needs one more
+
+    def test_the_rho_cell_says_when_it_is_one_sided(self, client):
+        frag = _price_fragment(client, r="0", kind="put")
+        assert re.search(r'<span title="One-sided slope, for r ≥ 0[^"]*">-?\d+\.\d{5}</span>', frag)
+        assert "One-sided" not in _price_fragment(client, kind="put")
+
+    # --- where the grid's own error is past 1 percent ------------------------
+    def test_high_total_volatility_shows_dashes_with_the_reason(self, client):
+        # volatility x sqrt(T) = 3: the grid takes a bumped price 1 to 3 percent off
+        res = engine.price_all(100, 100, 4.0, 0.03, 0.0, 1.5, "call")
+        am = res["greeks_fd"]["american"]
+        assert am["vega"] is None and am["rho"] is None and am["delta"] is not None
+        assert "volatility x sqrt(expiry) of 2.5" in res["american_vega_rho_unavailable"]
+        frag = _price_fragment(client, T="4", sigma="1.5", r="0.03")
+        assert 'title="Not computed: past a volatility x sqrt(expiry) of 2.5' in frag
+        _, rows, _ = _table(frag, "greeks")
+        assert rows[2][3] == "–" and rows[4][3] == "–" and rows[0][3] != "–"
+
+    def test_just_inside_the_limit_they_are_shown_and_within_one_percent(self):
+        res = engine.price_all(100, 100, 6.25, 0.03, 0.0, 1.0, "call")         # total volatility 2.5
+        am, bs = res["greeks_fd"]["american"], res["greeks"]
+        assert am["vega"] == pytest.approx(bs["vega"], rel=0.01)
+        assert am["rho"] == pytest.approx(bs["rho"], rel=0.01)
+
+    def test_rho_alone_is_refused_at_a_near_zero_rate_with_a_high_volatility(self, client):
+        # volatility 1.5, r = 0: the grid's spurious early-exercise premium moves rho by 4 percent
+        res = engine.price_all(100, 100, 0.25, 0.0, 0.0, 1.5, "call")
+        am = res["greeks_fd"]["american"]
+        assert am["vega"] == pytest.approx(res["greeks"]["vega"], rel=0.01) and am["rho"] is None
+        assert am["rho_note"].startswith("Not computed: with the rate near zero")
+        assert res["american_vega_rho_unavailable"] is None
+        frag = _price_fragment(client, T="0.25", sigma="1.5", r="0")
+        assert 'title="Not computed: with the rate near zero' in frag
+        # at a rate of 20 percent (r T = 0.05) there is no such premium: rho is shown, within 1 percent
+        ok = engine.price_all(100, 100, 0.25, 0.2, 0.0, 1.5, "call")
+        assert ok["greeks_fd"]["american"]["rho"] == pytest.approx(ok["greeks"]["rho"], rel=0.01)
 
     def test_american_table_cells_show_numbers_not_dashes(self, client):
         _, rows, _ = _table(_price_fragment(client, kind="put"), "greeks")
@@ -440,20 +618,49 @@ class TestImpliedVol:
         assert len(calls) == 1 and calls[0]["bracket"] == (engine.MIN_VOL, 4.0)     # T = 1
 
     @pytest.mark.parametrize("price,match", [
-        (-0.5, "below intrinsic"),
+        (-0.5, "below the no-arbitrage lower bound"),
         (0.0, "no time value"),
     ])
     def test_out_of_bounds_prices_get_specific_messages(self, price, match):
         with pytest.raises(engine.InputError, match=match):
             engine.solve_implied_vol(100, 120, 1.0, 0.05, 0.0, price, "call")
 
-    def test_below_intrinsic_puts_and_calls(self):
-        # discounted intrinsic of the call: 100 - 80 e^{-0.05} = 23.90
-        with pytest.raises(engine.InputError, match="below intrinsic.*23\\.9"):
+    def test_below_the_lower_bound_puts_and_calls(self):
+        # the bound is the discounted intrinsic value, not S - K: call 100 - 80 e^{-0.05} = 23.90
+        with pytest.raises(engine.InputError, match="below the no-arbitrage lower bound.*= 23\\.9"):
             engine.solve_implied_vol(100, 80, 1.0, 0.05, 0.0, 20.0, "call")
         # put: 100 e^{-0.05} - 80 = 15.12
-        with pytest.raises(engine.InputError, match="below intrinsic.*15\\.1"):
+        with pytest.raises(engine.InputError, match="below the no-arbitrage lower bound.*= 15\\.1"):
             engine.solve_implied_vol(80, 100, 1.0, 0.05, 0.0, 10.0, "put")
+
+    def test_the_bound_is_not_called_intrinsic_value_when_it_is_not(self):
+        """S = 100, K = 50, T = 2, r = 0, q = 6%: the bound is 38.69 but intrinsic is 50, and a
+        European call may trade below intrinsic. A price of 38 is refused for the bound it breaks."""
+        with pytest.raises(engine.InputError) as info:
+            engine.solve_implied_vol(100, 50, 2.0, 0.0, 0.06, 38.0, "call")
+        assert "S e^(-qT) - K e^(-rT) = 38.69" in str(info.value) and "discounted" in str(info.value)
+        below = op.bs_price(op.OptionSpec(S0=100, K=50, T=2.0, r=0.0, q=0.06, sigma=0.3), "call")
+        assert 38.7 < below < 50            # under intrinsic value, yet inside the bounds: solvable
+        assert engine.solve_implied_vol(100, 50, 2.0, 0.0, 0.06, below, "call")["sigma"] == pytest.approx(0.3, abs=1e-6)
+
+    def test_a_price_a_hair_below_the_bound_prints_two_different_numbers(self):
+        lower = 100 - 80 * math.exp(-0.05)
+        with pytest.raises(engine.InputError) as info:
+            engine.solve_implied_vol(100, 80, 1.0, 0.05, 0.0, lower - 1e-6, "call")
+        price, bound = re.search(r"price (\S+) is below.*= (\S+)\)", str(info.value)).groups()
+        assert price != bound and float(bound) - float(price) == pytest.approx(1e-6, rel=0.1)
+
+    def test_a_price_with_time_value_below_the_minimum_volatility_is_not_called_worthless(self):
+        """A call at the forward, 0.02 against the bound of 0: Black-Scholes at the page's minimum
+        volatility of 0.1% already gives 0.0399, so the price implies about 0.05% volatility. It
+        has time value; it is the volatility that is below what the page prices."""
+        K = 100 * math.exp(0.05)
+        with pytest.raises(engine.InputError) as info:
+            engine.solve_implied_vol(100, K, 1.0, 0.05, 0.0, 0.02, "call")
+        msg = str(info.value)
+        assert "no time value" not in msg
+        assert "implies a volatility below this page's minimum of 0.1%" in msg
+        assert "Black-Scholes gives 0.0398" in msg
 
     def test_price_at_the_lower_bound_has_no_time_value(self):
         lower = 100 - 80 * math.exp(-0.05)
@@ -533,7 +740,8 @@ class TestImpliedVol:
         assert res["inputs"]["sigma"] == pytest.approx(0.27, abs=1e-6)
         assert "implied_vol" not in client.post("/api/price", json={**BASE, "kind": "call"}).json()
 
-    @pytest.mark.parametrize("price,match", [(-1.0, "below intrinsic"), (0.0, "no time value"),
+    @pytest.mark.parametrize("price,match", [(-1.0, "below the no-arbitrage lower bound"),
+                                             (0.0, "no time value"),
                                              (1e6, "above the Black-Scholes price")])
     def test_api_errors_are_400_with_the_message(self, client, price, match):
         r = client.post("/api/price", json={"S0": 100, "K": 100, "T": 1, "market_price": price})
@@ -666,6 +874,151 @@ class TestScenarios:
         page = client.get("/").text
         assert 'hx-post="/ui/ladder"' in page and 'data-view="ladder"' in page
         assert '.chart { width: 100%; height: 320px; }' in (WEBAPP / "templates" / "base.html").read_text()
+
+    # --- the map is European Black-Scholes, and says so ----------------------
+    def test_the_bar_says_the_map_is_european_black_scholes(self, client):
+        page = client.get("/").text
+        bar = re.search(r'<div class="scen-bar">.*?</div>', page, re.DOTALL).group(0)
+        assert "Black-Scholes (European) P&amp;L against the base price" in bar
+        assert "ignores early exercise" in bar                       # the tooltip
+
+    # --- small underlyings keep their resolution -----------------------------
+    def test_a_tiny_underlying_keeps_six_significant_digits(self):
+        """S = K = 1.234e-4: the P&L cells are about 1e-5, and six decimals left 40 distinct values."""
+        res = engine.scenario_grid(1.234e-4, 1.234e-4, 1.0, 0.05, 0.0, 0.2, "call")
+        cells = [v for rate in res["pnl"] for row in rate for v in row]
+        assert not res["all_zero"] and len(set(cells)) > 500          # 585 cells, distinct to 6 digits
+        opt = op.OptionSpec(S0=1.234e-4, K=1.234e-4, T=1.0, r=0.05, sigma=0.2)
+        cube = op.stress_test(opt, "call", np.linspace(0.7, 1.3, 13), np.linspace(-0.1, 0.1, 9),
+                              np.array([-0.02, -0.01, 0, 0.01, 0.02]), pricer="bs")
+        want = np.transpose(cube - op.bs_price(opt, "call"), (2, 1, 0))
+        got = np.array(res["pnl"], dtype=float)
+        assert np.allclose(got, want, rtol=0, atol=np.abs(want).max() * 2e-6)
+        assert res["spot"][0] == pytest.approx(0.7 * 1.234e-4, rel=1e-9)  # six decimals gave 8.6e-05
+
+    def test_a_large_underlying_is_not_over_precise(self):
+        res = engine.scenario_grid(1e5, 1e5, 1.0, 0.05, 0.0, 0.2, "call")
+        cells = [v for rate in res["pnl"] for row in rate for v in row]
+        assert all(round(v, 6) == v for v in cells)
+
+    def test_pnl_below_a_hundred_millionth_of_the_scale_is_zero_not_a_map(self):
+        # K = 1e5, T = 0.05, sigma = 5%: every cell prices under 1e-3, the cutoff for a 1e5 scale
+        assert engine.scenario_grid(100, 100000, 0.05, 0.05, 0.0, 0.05, "call")["all_zero"]
+        # ... but the same relative depth with a small underlying still maps
+        assert not engine.scenario_grid(1e-4, 1e-4, 1.0, 0.05, 0.0, 0.2, "call")["all_zero"]
+
+    def test_chart_labels_are_built_in_significant_digits_not_fixed_decimals(self, client):
+        frag = client.post("/ui/scenarios", data={**FORM, "kind": "call"}).text
+        assert "const sig = " in frag and "tickvals: ticks" in frag and "ticktext: ticks.map" in frag
+        assert 'tickformat: "+.2f"' not in frag and ":.4f}" not in frag and ":.2f}" not in frag
+        assert 'hovertemplate: "%{text}<extra></extra>"' in frag
+
+    JSC = "/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc"
+    MOCK = """
+var els = {};
+function makeEl(id) { return { id: id, hidden: false, options: [], value: "", innerHTML: "",
+                               add: function (o) { this.options.push(o); } }; }
+var document = { getElementById: function (id) { return els[id] || (els[id] = makeEl(id)); }, documentElement: {} };
+function getComputedStyle() { return { getPropertyValue: function (n) {
+  return ({"--accent": " #2f6fdb", "--accent-2": " #d9822b", "--ink": " #1d1f23", "--panel": " #ffffff",
+           "--line": " #e3e3de"})[n] || ""; } }; }
+function Option(t, v) { this.text = t; this.value = v; }
+function plotLayout(x) { return x; }
+var PLOT_CONFIG = {}, __calls = [], window = {};
+var Plotly = { react: function (el, data, layout) { __calls.push(data); }, purge: function () {} };
+function setTimeout(f) { f(); }
+"""
+
+    def _draw(self, client, tmp_path, **form):
+        """Run the scenarios fragment's script in a JavaScript engine with a mocked page and
+        Plotly, and return the traces it hands to Plotly.react. Skips where none is installed."""
+        exe = shutil.which("node") or (self.JSC if pathlib.Path(self.JSC).exists() else None)
+        if exe is None:
+            pytest.skip("no JavaScript engine (node or macOS jsc) to run the fragment's script")
+        frag = client.post("/ui/scenarios", data={**FORM, "kind": "call", **form}).text
+        script = re.search(r"<script>(.*?)</script>", frag, re.DOTALL).group(1)
+        prelude = "var print = typeof print === 'undefined' ? console.log : print;\n"
+        (tmp_path / "scen.js").write_text(
+            prelude + self.MOCK + script + "\nprint(JSON.stringify(__calls[__calls.length - 1]));\n")
+        out = subprocess.run([exe, str(tmp_path / "scen.js")], capture_output=True, text=True,
+                             timeout=60, check=False)
+        assert out.returncode == 0, out.stderr + out.stdout
+        return json.loads(out.stdout.strip().splitlines()[-1])
+
+    def test_script_labels_a_tiny_underlyings_pnl_in_significant_digits(self, client, tmp_path):
+        heat, base = self._draw(client, tmp_path, S0="0.05", K="0.05")
+        cb = heat["colorbar"]
+        assert len(set(cb["ticktext"])) == 5 and cb["ticktext"][2] == "0"       # not +0.01 +0.00 -0.00
+        assert cb["ticktext"][0] == "-" + cb["ticktext"][4].lstrip("+")
+        res = engine.scenario_grid(0.05, 0.05, 1.0, 0.05, 0.0, 0.2, "call")
+        top = max(abs(v) for row in res["pnl"][2] for v in row if v is not None)
+        assert float(cb["ticktext"][4]) == pytest.approx(top, rel=2e-3)
+        assert cb["tickvals"][4] == pytest.approx(top)
+        cell = heat["text"][8][12]                                              # vol +10 pts, spot +30%
+        assert cell.startswith("Spot 0.065 (+30%)<br>Vol 30.00% (+10 pts)<br>P&L +")
+        assert float(cell.rsplit("P&L ", 1)[1]) == pytest.approx(res["pnl"][2][8][12], rel=1e-3)
+        assert base["text"][0].startswith("Base case<br>Spot 0.05, vol 20.00%<br>Price 0.0")
+
+    def test_script_hover_text_for_the_default_contract(self, client, tmp_path):
+        heat, base = self._draw(client, tmp_path)
+        assert base["text"][0] == "Base case<br>Spot 100, vol 20.00%<br>Price 10.4506"
+        assert heat["text"][4][6] == "Spot 100 (0%)<br>Vol 20.00% (0 pts)<br>P&L 0"
+        assert heat["text"][0][0].startswith("Spot 70 (-30%)<br>Vol 10.00% (-10 pts)<br>P&L -")
+        assert heat["zmid"] == 0
+
+    def test_script_blank_cells_have_no_hover_text(self, client, tmp_path):
+        heat, _ = self._draw(client, tmp_path, sigma="0.05")        # vol shocks -10, -7.5, -5 are masked
+        assert [heat["text"][j][0] for j in range(4)] == ["", "", "", heat["text"][3][0]]
+        assert heat["text"][3][0].startswith("Spot 70 (-30%)<br>Vol 2.50%")
+
+
+# ---------------------------------------------------------------------------
+# Display details
+# ---------------------------------------------------------------------------
+class TestDisplay:
+    def test_a_greek_that_rounds_to_zero_prints_without_a_sign(self, client):
+        """theta of a deep in-the-money put is -0.0, and gamma and vega of a deep in-the-money
+        call are -4e-9 and -2e-6: all three printed as -0.00000."""
+        put = engine.price_all(100, 250, 1, 0.05, 0.0, 0.2, "put")["greeks_fd"]["american"]
+        assert put["theta"] == 0.0 and math.copysign(1.0, put["theta"]) < 0
+        call = engine.price_all(100, 53.8346, 0.25, 0.05, 0.0, 0.2, "call")["greeks_fd"]
+        assert -5e-6 < call["european"]["gamma"] < 0 and -5e-6 < call["american"]["vega"] < 0
+        for frag, cells in ((_price_fragment(client, K="250", kind="put"), {"Theta": 3}),
+                            (_price_fragment(client, K="53.8346", T="0.25"), {"Gamma": 2, "Vega": 3})):
+            assert "-0.00000" not in frag
+            _, rows, _ = _table(frag, "greeks")
+            by = {r[0]: r for r in rows}
+            for greek, column in cells.items():
+                assert by[greek][column] == "0.00000", greek
+
+    def test_real_negative_values_keep_their_sign(self, client):
+        _, rows, _ = _table(_price_fragment(client, kind="put"), "greeks")
+        assert rows[0][1].startswith("-0.") and rows[3][1].startswith("-")       # put delta, theta
+
+    def test_a_tiny_difference_from_black_scholes_prints_without_a_sign(self, client, monkeypatch):
+        bs = float(op.bs_price(op.OptionSpec(S0=100, K=100, T=1, r=0.05, sigma=0.2), "call"))
+        monkeypatch.setattr(engine, "fem_price", lambda *a, **k: bs * (1 - 4e-6))    # -0.04 bp
+        _, rows, _ = _table(_price_fragment(client), "engines")
+        assert rows[4][2] == "0.0" and rows[0][2] == "0.0"          # finite element, Black-Scholes
+        _, other, _ = _table(_price_fragment(client, K="120"), "engines")
+        assert all(row[2][0] in "+-" or row[2] == "0.0" for row in other)   # a real gap keeps its sign
+
+    def test_a_rounding_level_premium_of_either_sign_prints_as_zero(self, client, monkeypatch):
+        real = engine.fd_greeks
+
+        def nudged(opt, kind, **kw):
+            g = real(opt, kind, **kw)
+            if kw["american"]:
+                g["price"] -= 4e-5              # the premium is -0.00004, which %.4f prints as -0.0000
+            return g
+
+        monkeypatch.setattr(engine, "fd_greeks", nudged)
+        assert "grid 0.0000" in _price_fragment(client) and "-0.0000" not in _price_fragment(client)
+
+    def test_switching_to_implied_vol_prefills_significant_digits(self, client):
+        """px.toFixed(4) turned a price under 5e-5 into 0 and the first solve failed."""
+        page = client.get("/").text
+        assert "px.toPrecision(6)" in page and "px.toFixed(4)" not in page
 
 
 # ---------------------------------------------------------------------------

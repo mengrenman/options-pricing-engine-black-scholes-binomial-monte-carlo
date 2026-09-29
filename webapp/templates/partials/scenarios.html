@@ -28,6 +28,15 @@
     const colorscale = [[0, color("--accent")], [0.5, mix(color("--panel"), color("--line"), 0.35)],
                         [1, color("--accent-2")]];
     const signed = (n) => (n > 0 ? "+" : "") + n;
+    // n significant digits and never an exponent, so a tiny underlying's P&L (1e-6) and a large
+    // one's (1e4) both read as money. Fixed decimals would print the tiny one as +0.00.
+    const sig = (v, n) => {
+      if (v === 0) return "0";
+      const d = Math.max(0, Math.min(20, n - 1 - Math.floor(Math.log10(Math.abs(v)))));
+      const t = v.toFixed(d);
+      return t.indexOf(".") < 0 ? t : t.replace(/\.?0+$/, "");
+    };
+    const signedSig = (v, n) => (v > 0 ? "+" : "") + sig(v, n);
 
     window.scenDraw = function () {
       const el = document.getElementById("scen-chart"), empty = document.getElementById("scen-empty");
@@ -37,20 +46,26 @@
       el.hidden = flat;
       empty.hidden = !flat;
       if (flat) { Plotly.purge(el); return; }
+      // With zmid 0 Plotly's color range is +/- the largest |P&L|, so five ticks there span it.
+      const M = Math.max.apply(null, z.map((row) => Math.max.apply(null, row.map((v) => (v === null ? 0 : Math.abs(v))))));
+      const ticks = [-M, -M / 2, 0, M / 2, M];
       const heat = {
         type: "heatmap", x: R.spot_shock_pct, y: R.vol_shock_pts, z: z,
-        customdata: R.vol.map((v) => R.spot.map((s) => [s, v])),
+        // The hover text is built here, in significant digits, rather than by a fixed-decimal d3 format.
+        text: z.map((row, iy) => row.map((v, ix) => (v === null ? "" :
+          "Spot " + sig(R.spot[ix], 4) + " (" + signed(R.spot_shock_pct[ix]) + "%)<br>Vol " +
+          (R.vol[iy] * 100).toFixed(2) + "% (" + signed(R.vol_shock_pts[iy]) + " pts)<br>P&L " + signedSig(v, 4)))),
         zmid: 0, colorscale: colorscale, xgap: 1, ygap: 1, hoverongaps: false,
-        colorbar: { thickness: 10, len: 0.95, tickformat: "+.2f", tickfont: { size: 10 } },
-        hovertemplate: "Spot %{customdata[0]:.2f} (%{x:+.0f}%)<br>Vol %{customdata[1]:.1%} (%{y:+.1f} pts)" +
-                       "<br>P&L %{z:+.4f}<extra></extra>",
+        colorbar: { thickness: 10, len: 0.95, tickvals: ticks, ticktext: ticks.map((t) => signedSig(t, 3)),
+                    tickfont: { size: 10 } },
+        hovertemplate: "%{text}<extra></extra>",
       };
       const base = {
         type: "scatter", mode: "markers", x: [0], y: [0], showlegend: false,
         marker: { symbol: "circle-open", size: 14, line: { width: 2, color: color("--ink") } },
-        customdata: [[R.S0, R.sigma, R.base]],
-        hovertemplate: "Base case<br>Spot %{customdata[0]:.2f}, vol %{customdata[1]:.1%}" +
-                       "<br>Price %{customdata[2]:.4f}<extra></extra>",
+        text: ["Base case<br>Spot " + sig(R.S0, 4) + ", vol " + (R.sigma * 100).toFixed(2) + "%<br>Price " +
+               sig(R.base, 6)],
+        hovertemplate: "%{text}<extra></extra>",
       };
       const layout = plotLayout({
         margin: { l: 46, r: 8, t: R.masked_vols ? 20 : 6, b: 38 }, showlegend: false,
