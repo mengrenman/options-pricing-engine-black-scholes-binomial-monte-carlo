@@ -37,7 +37,12 @@ def _as_finite_float(value, what: str) -> float:
         raise ValueError(  # noqa: TRY004 - one exception type for any bad payload
             f"{what}: expected a number, got {type(value).__name__}"
         )
-    out = float(value)
+    try:
+        out = float(value)
+    except OverflowError:
+        # JSON integers are unbounded, so a 310-digit literal parses to a Python
+        # int that float() cannot represent. Keep the one-exception contract.
+        raise ValueError(f"{what}: integer too large to represent as a float") from None
     if not math.isfinite(out):
         raise ValueError(f"{what}: must be finite, got {out!r}")
     return out
