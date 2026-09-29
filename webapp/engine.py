@@ -693,17 +693,84 @@ def load_surface(surface_json: str) -> VolSurface:
         raise InputError(f"Invalid surface: {exc}") from exc
 
 
+FORWARD_TOLERANCE = 0.005   # a surface's forward may differ from S0 e^{(r-q)t} by 0.5%
+
+
+def _forward_refusal(F: float, carry: float, t: float) -> InputError:
+    return InputError(
+        f"The surface's forward at t={t:g} is {F:.6g}, but spot x e^((r - q) t) is "
+        f"{carry:.6g}. It was fitted at a different spot, rate or dividend yield, or "
+        "its forward curve was changed after fitting; refit it here."
+    )
+
+
+def check_forward(surface: VolSurface, S0: float, t: float, r: float, q: float,
+                  *, through_expiry: bool = False) -> float:
+    """The surface's forward at ``t``, refused unless it agrees with ``S0 e^{(r-q)t}``.
+
+    The surface JSON carries the forward it was fitted with, and Dupire local
+    vol is evaluated at that forward, not at the spot the request names.  A
+    surface fitted at another spot or rate, or one whose forward curve was
+    edited, therefore prices a different market without any sign of it (a
+    feasibility study priced a call at 54.39 at S0 = 100 with the forward
+    multiplied by 1e6).  Every local-vol route calls this before it computes
+    anything.
+
+    The tolerance is 0.5%, widened by the slack of the surface's own linear
+    interpolation between quoted forwards.  That interpolation is exact at each
+    quoted expiry but sits above the exponential in between, by 0.03% at a 5%
+    rate and 3.2% at the 50% rate cap; without the allowance a correctly fitted
+    surface would be refused at a high rate.
+
+    A route that reads the forward at one time only, as the local-vol slice does, checks
+    ``t`` alone.  The PDE views read it at every time step from 0 to ``t``, so with
+    ``through_expiry`` every quoted forward up to the first quoted expiry at or after ``t``
+    is checked as well (all of them if ``t`` is past the last).  Those are the points the
+    forward at any earlier time is interpolated from.  A correct fit stores
+    ``S0 e^{(r-q)T}`` at each of them, so the plain 0.5% applies, with no interpolation
+    slack.  Without this a curve edited at an earlier expiry passed whenever ``t`` sat at
+    or beyond the next one.
+
+    Raises InputError, including for a surface with no forward curve at all
+    (``forward_at`` raises a bare ValueError there).
+    """
+    try:
+        F = float(surface.forward_at(t, r, q))
+        curve = [(float(T), float(F_T)) for T, F_T in surface.to_dict()["forward_curve"]]
+    except (ValueError, ArithmeticError) as exc:
+        raise InputError(f"Invalid surface: {exc}") from exc
+    carry = S0 * math.exp((r - q) * t)
+    expected = [carry]
+    quoted = [T for T, _ in curve]
+    if len(quoted) > 1 and quoted[0] <= t <= quoted[-1]:
+        # The forward a correctly fitted surface interpolates to at t.
+        expected.append(float(np.interp(
+            t, quoted, [S0 * math.exp((r - q) * T) for T in quoted])))
+    if not math.isfinite(F) or min(abs(F / e - 1.0) for e in expected) > FORWARD_TOLERANCE:
+        raise _forward_refusal(F, carry, t)
+    if through_expiry:
+        at_or_after = [T for T in quoted if T >= t]
+        horizon = min(at_or_after) if at_or_after else math.inf
+        for T, F_T in curve:
+            exact = S0 * math.exp((r - q) * T)
+            if T <= horizon and (not math.isfinite(F_T)
+                                 or abs(F_T / exact - 1.0) > FORWARD_TOLERANCE):
+                raise _forward_refusal(F_T, exact, T)
+    return F
+
+
 def local_vol_slice(surface_json, S0, t, r, q) -> dict:
     surface = load_surface(surface_json)
     S0 = _check_range(parse_float(S0, "Spot"), "Spot", MIN_PRICE, 1e6)
     t = _check_range(parse_float(t, "Time"), "Time", MIN_EXPIRY, 30.0)
     r = _check_range(parse_float(r, "Rate"), "Rate", -0.5, 0.5)
     q = _check_range(parse_float(q, "Dividend yield"), "Dividend yield", -0.5, 0.5)
+    forward = check_forward(surface, S0, t, r, q)
 
     spots = np.linspace(0.6 * S0, 1.4 * S0, 81)
     try:
         lv = np.atleast_1d(dupire_local_vol(surface, spots, t, r, q))
-        w = surface.total_var_from_logm(np.log(spots / surface.forward_at(t, r, q)), t)
+        w = surface.total_var_from_logm(np.log(spots / forward), t)
         implied = np.sqrt(np.maximum(w, 0.0) / t)
     except (ValueError, ArithmeticError) as exc:
         raise InputError(str(exc)) from exc
