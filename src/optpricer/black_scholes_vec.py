@@ -1,13 +1,13 @@
 # black_scholes_vec.py
-# Vectorised Black-Scholes pricing, Greeks, and implied-vol.
+# Vectorized Black-Scholes pricing, Greeks, and implied-vol.
 # All public functions accept scalars *or* NumPy arrays and broadcast.
 
 from __future__ import annotations
 import numpy as np
 from scipy.stats import norm
 
-_N = norm.cdf   # vectorised standard-normal CDF
-_n = norm.pdf   # vectorised standard-normal PDF
+_N = norm.cdf   # vectorized standard-normal CDF
+_n = norm.pdf   # vectorized standard-normal PDF
 
 
 # ---------------------------------------------------------------------------
@@ -32,10 +32,10 @@ def _is_call(kind) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Vectorised price
+# Vectorized price
 # ---------------------------------------------------------------------------
 def bs_price_vec(S, K, T, r, q, sigma, kind) -> np.ndarray:
-    """Vectorised Black-Scholes price.
+    """Vectorized Black-Scholes price.
 
     Parameters accept scalars or arrays; NumPy broadcasting rules apply.
 
@@ -57,7 +57,7 @@ def bs_price_vec(S, K, T, r, q, sigma, kind) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Vectorised Greeks
+# Vectorized Greeks
 # ---------------------------------------------------------------------------
 def bs_greeks_vec(S, K, T, r, q, sigma, kind) -> dict[str, np.ndarray]:
     """Vectorized Black-Scholes Greeks.
@@ -101,7 +101,7 @@ def bs_greeks_vec(S, K, T, r, q, sigma, kind) -> dict[str, np.ndarray]:
 
 
 # ---------------------------------------------------------------------------
-# Vectorised implied-vol (Newton-Raphson — vectorisable, unlike Brent)
+# Vectorized implied-vol (Newton-Raphson — vectorizable, unlike Brent)
 # ---------------------------------------------------------------------------
 def bs_implied_vol_vec(
     S, K, T, r, q, target_prices, kind,

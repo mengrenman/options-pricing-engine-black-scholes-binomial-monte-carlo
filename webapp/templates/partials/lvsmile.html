@@ -1,0 +1,37 @@
+<p class="lv-status" role="status"><span title="PDE-implied minus surface implied vol at the strike nearest the forward. It includes the PDE's own error on its 300 x 100 grid: about 1 vol bp on a constant-vol surface at a 5% rate, a few more with a steep term structure, large carry or vol above 60%.{% if res.forward_gap is not none and res.forward_gap|abs > 0.0005 %} The surface's forward at t = {{ res.t }} is {{ "%+.2f"|format(res.forward_gap * 100) }}% from spot x e^((r - q) t), because the fit interpolates forwards linearly between quoted expiries: Dupire and the surface's smile use one forward, the PDE and the Black-Scholes inversion the other, and the gap includes that mismatch.{% endif %}">ATM gap {% if res.atm_gap_bps is none %}n/a{% else %}{{ "%+.1f"|format(res.atm_gap_bps) }} vol bps{% endif %}</span>
+  &middot; <span{% if res.clipped_nodes %} class="warn"{% endif %} title="Share of the PDE's local-vol nodes, over all time steps, between strikes {{ "%.4g"|format(res.clip_range[0]) }} and {{ "%.4g"|format(res.clip_range[1]) }} (four at-the-money standard deviations either side of the forward) that sit at a library bound ({{ res.bounds[0] }} or {{ res.bounds[1] }}). Dupire local vol is clamped to a bound where the surface gives no valid value: butterfly or calendar arbitrage, or extreme extrapolation. Those nodes hold a bound, not a computed local vol.">{{ "%.2f"|format(res.clipped_share * 100) }}% of nodes at floor or cap</span>{% if res.unpriced %} &middot; <span class="warn">{{ res.unpriced }} not invertible</span>{% endif %}</p>
+<div id="lv-smile-chart" class="chart tall"></div>
+<script>
+  // Drawn after a zero timeout for the same reason as the local-vol chart: htmx runs this
+  // script before it removes the outgoing fragment, whose height the chart must not count.
+  setTimeout(function () {
+    const R = {{ res|tojson }};
+    const css = getComputedStyle(document.documentElement);
+    const accent = css.getPropertyValue("--accent").trim();
+    const accent2 = css.getPropertyValue("--accent-2").trim();
+    const line = css.getPropertyValue("--line").trim();
+    const grid = { gridcolor: line, zerolinecolor: line };
+    Plotly.newPlot("lv-smile-chart", [
+      { x: R.line.strike, y: R.line.iv, name: "Surface (SVI)", mode: "lines",
+        line: { color: accent, width: 2 },
+        hovertemplate: "strike %{x:.2f}<br>surface IV %{y:.2%}<extra></extra>" },
+      { x: R.strike, y: R.iv_pde, name: "Local-vol PDE", mode: "markers",
+        marker: { color: accent2, size: 8 },
+        hovertemplate: "strike %{x:.2f}<br>PDE IV %{y:.2%}<extra></extra>" },
+      { x: R.strike, y: R.diff_bps, name: "PDE minus surface", mode: "lines+markers",
+        xaxis: "x2", yaxis: "y2", showlegend: false,
+        line: { color: accent2, width: 1 }, marker: { color: accent2, size: 5 },
+        hovertemplate: "strike %{x:.2f}<br>gap %{y:+.1f} vol bps<extra></extra>" },
+    ], plotLayout({
+      margin: { l: 56, r: 12, t: 28, b: 40 },
+      legend: { orientation: "h", x: 0, y: 1, yanchor: "bottom", font: { size: 11 } },
+      xaxis: Object.assign({ showticklabels: false }, grid),
+      yaxis: Object.assign({ title: { text: "Implied vol", standoff: 4 }, tickformat: ".1%",
+                             domain: [0.3, 1], automargin: true }, grid),
+      xaxis2: Object.assign({ title: { text: "Strike, T = " + R.t + "y", standoff: 2 },
+                              anchor: "y2", matches: "x" }, grid),
+      yaxis2: Object.assign({ title: { text: "vol bps", standoff: 4 }, anchor: "x2",
+                              domain: [0, 0.2], zeroline: true, automargin: true }, grid),
+    }), PLOT_CONFIG);
+  }, 0);
+</script>

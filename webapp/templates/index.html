@@ -1,26 +1,91 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="panel">
+<section class="panel" id="pricing-pane">
   <h2>Price an option <span class="spin" id="price-spin">computing…</span></h2>
-  <p class="note">Black-Scholes, a binomial tree, Monte Carlo and finite differences price one
-    contract, compared with Black-Scholes in basis points. The tree's American price can sit higher
-    because it allows early exercise; for a call, that has value only with a dividend or a negative rate.</p>
-  <form class="inputs" hx-post="/ui/price" hx-target="#price-result"
+  <p class="note">Black-Scholes, a binomial tree, Monte Carlo, finite differences and finite elements
+    price one contract, compared with Black-Scholes in basis points. The American column allows early
+    exercise, which for a call has value only with a dividend or a negative rate.</p>
+  <form class="inputs" id="price-form" hx-post="/ui/price" hx-target="#price-result"
         hx-trigger="load, input delay:250ms" hx-indicator="#price-spin">
     <label>Spot <input name="S0" value="{{ d.S0 }}" inputmode="decimal"></label>
     <label>Strike <input name="K" value="{{ d.K }}" inputmode="decimal"></label>
     <label>Expiry (years) <input name="T" value="{{ d.T }}" inputmode="decimal"></label>
     <label>Rate <input name="r" value="{{ d.r }}" inputmode="decimal"></label>
     <label>Dividend yield <input name="q" value="{{ d.q }}" inputmode="decimal"></label>
-    <label>Volatility <input name="sigma" value="{{ d.sigma }}" inputmode="decimal"></label>
+    <label><span id="vol-label">Volatility</span> <input name="sigma" id="vol-input" value="{{ d.sigma }}" inputmode="decimal"></label>
     <label>Type
       <select name="kind">
         <option value="call" {% if d.kind == "call" %}selected{% endif %}>Call</option>
         <option value="put" {% if d.kind == "put" %}selected{% endif %}>Put</option>
       </select>
     </label>
+    <label>Solve for
+      <select name="solve" id="solve-for"
+              title="Implied vol reads the volatility field as a market price and prices everything at the volatility that reproduces it.">
+        <option value="price" selected>Price</option>
+        <option value="iv">Implied vol</option>
+      </select>
+    </label>
   </form>
+  <script>
+    // "Solve for" changes what the volatility field holds. Each mode keeps its own value, and the
+    // first switch to Implied vol fills in the Black-Scholes price at the current inputs, so the
+    // solve starts from a price the volatility field reproduces.
+    (function () {
+      const mode = document.getElementById("solve-for"), box = document.getElementById("vol-input"),
+            label = document.getElementById("vol-label"), form = mode.form;
+      const kept = { price: {{ d.sigma|tojson }}, iv: "" };
+      let previous = mode.value;                 // a reload can restore "iv" from the browser
+      kept[previous] = box.value;
+      label.textContent = previous === "iv" ? "Market price" : "Volatility";
+      const field = (n) => parseFloat(form.elements[n].value);
+      function erfc(x) {   // Numerical Recipes erfcc, relative error under 1.2e-7
+        const z = Math.abs(x), t = 1 / (1 + 0.5 * z);
+        const y = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 +
+          t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
+        return x >= 0 ? y : 2 - y;
+      }
+      function blackScholes(vol) {
+        const S = field("S0"), K = field("K"), T = field("T"), r = field("r"), q = field("q");
+        const d1 = (Math.log(S / K) + (r - q + vol * vol / 2) * T) / (vol * Math.sqrt(T)), d2 = d1 - vol * Math.sqrt(T);
+        const N = (x) => erfc(-x / Math.SQRT2) / 2;
+        return form.elements.kind.value === "put"
+          ? K * Math.exp(-r * T) * N(-d2) - S * Math.exp(-q * T) * N(-d1)
+          : S * Math.exp(-q * T) * N(d1) - K * Math.exp(-r * T) * N(d2);
+      }
+      mode.addEventListener("change", function () {
+        kept[previous] = box.value;
+        previous = mode.value;
+        const iv = mode.value === "iv";
+        label.textContent = iv ? "Market price" : "Volatility";
+        if (iv && !kept.iv) {
+          const px = blackScholes(parseFloat(kept.price));
+          kept.iv = isFinite(px) ? px.toPrecision(6) : "";   // significant digits: a price under 5e-5 must not round to 0
+        }
+        box.value = kept[mode.value];
+      });
+    })();
+  </script>
   <div id="price-result" aria-live="polite"></div>
+  <div class="tabs" role="tablist" data-group="price">
+    <button type="button" role="tab" data-view="ladder" aria-selected="true">Price and delta across spot</button>
+    <button type="button" role="tab" data-view="scenarios" aria-selected="false">Scenarios</button>
+  </div>
+  <div class="view" data-group="price" data-view="ladder" data-follows="price-form"
+       hx-post="/ui/ladder" hx-include="#price-form" hx-trigger="shown, refresh"
+       hx-indicator="#price-spin" aria-live="polite"></div>
+  <!-- The rate selector sits outside .view-body, the part htmx swaps, so it keeps its choice
+       when the inputs change and the view re-renders. It never goes to the server: the fragment
+       carries every rate slice and the selector only picks which one is drawn. -->
+  <div class="view scen-view" data-group="price" data-view="scenarios" data-follows="price-form" hidden
+       hx-post="/ui/scenarios" hx-include="#price-form" hx-trigger="shown, refresh"
+       hx-target="find .view-body" hx-indicator="#price-spin" aria-live="polite">
+    <div class="scen-bar">
+      <label>Rate shock <select id="scen-rate" onchange="if (window.scenDraw) window.scenDraw()"></select></label>
+      <span title="Black-Scholes (European) P&amp;L against the base price, at the shocked spot, volatility and rate. The ring marks the base case. It ignores early exercise, so an American put's P&amp;L can differ.">Black-Scholes (European) P&amp;L against the base price. The ring marks the base case.</span>
+    </div>
+    <div class="view-body"></div>
+  </div>
 </section>
 
 <section class="panel">
@@ -30,7 +95,8 @@
     smile, standing in for market data. The fitted surface travels to the browser as JSON, so each
     local-vol request carries its own surface and the server keeps no state.</p>
   <form class="inputs" hx-post="/ui/surface" hx-target="#surface-result"
-        hx-trigger="load, input delay:400ms" hx-indicator="#surface-spin" hx-include="#lv-t">
+        hx-trigger="load, input delay:400ms" hx-indicator="#surface-spin"
+        hx-include="#lv-t, #lv-view, #lv-strike">
     <label>Spot <input name="S0" value="{{ d.S0 }}" inputmode="decimal"></label>
     <label>Rate <input name="r" value="{{ d.r }}" inputmode="decimal"></label>
     <label>Dividend yield <input name="q" value="{{ d.q }}" inputmode="decimal"></label>

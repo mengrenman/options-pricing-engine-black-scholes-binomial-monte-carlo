@@ -1,21 +1,46 @@
 <div class="cols">
   <div>
-    <h3>Implied volatility surface</h3>
+    {# Two views of one grid, switched in the browser: no request, so no view-group route. #}
+    <div class="tabs" role="tablist" data-group="s3d">
+      <button type="button" role="tab" data-view="iv" aria-selected="true"
+        onclick="surfaceMode('iv')">Implied vol surface</button>
+      <button type="button" role="tab" data-view="tv" aria-selected="false"
+        onclick="surfaceMode('tv')" title="Total variance w = IV² x T">Total variance</button>
+    </div>
     <div id="surface-chart" class="chart tall"></div>
   </div>
   <div class="lv-col">
     <div class="bar">
-      <h3>Dupire local vol <span class="spin" id="lv-spin">computing…</span></h3>
-      <form class="inline" hx-post="/ui/localvol" hx-target="#lv-result"
-            hx-trigger="load, input delay:250ms" hx-indicator="#lv-spin">
+      <div class="tabs" role="tablist" data-group="lv">
+        {% for v in lv_views %}<button type="button" role="tab" data-view="{{ v.key }}"
+          aria-selected="{{ 'true' if v.key == lv_view else 'false' }}">{{ v.label }}</button>{% endfor %}
+        <span class="spin" id="lv-spin" title="computing">…</span>
+      </div>
+      <form class="inline" id="lv-form" onsubmit="return false">
         <input type="hidden" name="surface" value="{{ res.surface_json }}">
         <input type="hidden" name="S0" value="{{ S0 }}">
         <input type="hidden" name="r" value="{{ r }}">
         <input type="hidden" name="q" value="{{ q }}">
+        <input type="hidden" id="lv-view" name="lv_view" value="{{ lv_view }}" data-view-memo="lv">
         <label>Time (years) <input id="lv-t" name="t" value="{{ t }}" inputmode="decimal"></label>
       </form>
     </div>
-    <div id="lv-result" aria-live="polite"></div>
+    {# A view with an input of its own renders it here, once, and swaps only its .view-body:
+       a re-render of the input itself would drop focus on every keystroke. The input joins
+       #lv-form through its form attribute, so it follows and is posted with the rest. #}
+    {% for v in lv_views %}
+    <div class="view" data-group="lv" data-view="{{ v.key }}" data-follows="lv-form"
+         {% if v.key != lv_view %}hidden {% endif %}hx-post="{{ v.route }}" hx-include="#lv-form"
+         {% if v.strike %}hx-target="find .view-body" {% endif %}hx-trigger="shown, refresh"
+         hx-indicator="#lv-spin" aria-live="polite">
+      {% if v.strike %}
+      <label class="lv-strike">Strike <input id="lv-strike" name="K" form="lv-form"
+        value="{{ K }}" inputmode="decimal" placeholder="ATM forward"
+        title="Left empty, the strike is the at-the-money forward, rounded, at the Time shown."></label>
+      <div class="view-body"></div>
+      {% endif %}
+    </div>
+    {% endfor %}
   </div>
 </div>
 
@@ -37,21 +62,42 @@
 <script>
   (function () {
     const G = {{ res.grid|tojson }};
+    // Total variance w = IV^2 T, from the grid the chart already has: row i is expiry G.T[i].
+    const W = G.iv.map((row, i) => row.map((v) => v * v * G.T[i]));
+    const MODES = {
+      iv: { z: G.iv, label: "IV", hover: "IV %{z:.4f}" },
+      tv: { z: W, label: "w = IV² T", hover: "total variance %{z:.4f}" },
+    };
+    const tail = "<extra></extra>";
+    const head = "log-moneyness %{x:.3f}<br>expiry %{y:.2f}y<br>";
     const css = getComputedStyle(document.documentElement);
     const line = css.getPropertyValue("--line").trim();
     const axis = (t) => ({ title: { text: t, font: { size: 11 } }, tickfont: { size: 10 },
                            gridcolor: line, zerolinecolor: line, backgroundcolor: "rgba(0,0,0,0)" });
+    // The choice outlives a refit, which replaces this whole fragment.
+    let mode = window.surfaceChartMode === "tv" ? "tv" : "iv";
+    const mark = () => document.querySelectorAll('.tabs[data-group="s3d"] [role="tab"]').forEach(
+      (t) => t.setAttribute("aria-selected", String(t.dataset.view === mode)));
     Plotly.newPlot("surface-chart", [{
-      type: "surface", x: G.k, y: G.T, z: G.iv, colorscale: "Viridis",
-      colorbar: { title: "IV", thickness: 10, len: 0.8 },
-      hovertemplate: "log-moneyness %{x:.3f}<br>expiry %{y:.2f}y<br>IV %{z:.4f}<extra></extra>",
+      type: "surface", x: G.k, y: G.T, z: MODES[mode].z, colorscale: "Viridis",
+      // An object, not a string: the toggle restyles colorbar.title.text.
+      colorbar: { title: { text: MODES[mode].label }, thickness: 10, len: 0.8 },
+      hovertemplate: head + MODES[mode].hover + tail,
     }], plotLayout({
       margin: { l: 20, r: 0, t: 10, b: 0 },
       // A flatter box and a camera set back far enough that, at the side-by-side size of
       // about 460 x 420, no axis title is clipped and the corner ticks do not overlap.
-      scene: { xaxis: axis("log-moneyness"), yaxis: axis("expiry (y)"), zaxis: axis("IV"),
+      scene: { xaxis: axis("log-moneyness"), yaxis: axis("expiry (y)"), zaxis: axis(MODES[mode].label),
                aspectmode: "manual", aspectratio: { x: 1, y: 1, z: 0.75 },
                camera: { eye: { x: 1.8, y: -1.8, z: 1.0 } } },
     }), PLOT_CONFIG);
+    mark();
+    window.surfaceMode = function (next) {
+      mode = window.surfaceChartMode = next;
+      Plotly.restyle("surface-chart", { z: [MODES[mode].z], "colorbar.title.text": MODES[mode].label,
+                                        hovertemplate: [head + MODES[mode].hover + tail] }, [0]);
+      Plotly.relayout("surface-chart", { "scene.zaxis.title.text": MODES[mode].label });
+      mark();
+    };
   })();
 </script>

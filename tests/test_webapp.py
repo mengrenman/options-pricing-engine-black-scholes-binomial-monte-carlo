@@ -121,7 +121,10 @@ class TestHTMX:
     def test_price_fragment(self, client):
         frag = client.post("/ui/price", data={**{k: str(v) for k, v in BASE.items()},
                                               "kind": "call"}).text
-        assert "Black-Scholes" in frag and "ladder-chart" in frag
+        assert "Black-Scholes" in frag
+        view = client.post("/ui/ladder", data={**{k: str(v) for k, v in BASE.items()},
+                                               "kind": "call"}).text
+        assert "ladder-chart" in view and 'role="alert"' not in view
 
     def test_bad_input_renders_an_inline_error_with_status_200(self, client):
         """HTMX does not swap 4xx responses, so a 400 would look like nothing happened."""
@@ -189,13 +192,14 @@ class TestLayout:
             ["Expiry (years)", "Forward", "IV RMSE (bps)"]
 
     def test_greeks_table_gives_every_greek_its_units(self, client):
+        """The units column moved into a tooltip on each Greek's name, to save width."""
         frag = client.post("/ui/price", data={**{k: str(v) for k, v in BASE.items()},
                                               "kind": "call"}).text
         for greek, unit in [("Delta", "per unit of spot"), ("Gamma", "delta per unit of spot"),
                             ("Vega", "per unit of vol"), ("Theta", "per year"),
                             ("Rho", "per unit of rate")]:
-            assert re.search(rf"<td>{greek}</td><td class=\"num\">[-0-9.]+</td>"
-                             rf"<td class=\"sub\">{unit}</td>", frag), greek
+            assert re.search(rf'<td title="{unit}">{greek}</td>\s*<td class="num">[-0-9.]+</td>',
+                             frag), greek
 
 
 # ---------------------------------------------------------------------------

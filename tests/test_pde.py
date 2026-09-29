@@ -100,6 +100,93 @@ class TestFDGreeks:
         assert abs(fd_g["theta"] - bs_g["theta"]) / abs(bs_g["theta"]) < 0.01
 
 
+class TestFDGreeksNodeAndPrice:
+    """fd_greeks reads its derivatives at the grid node nearest ln(S0) and returns the
+    price of the same solve."""
+
+    def test_keys_are_kept_and_price_is_added(self):
+        g = fd_greeks(OPT, CALL, N_S=N_S, N_t=N_t)
+        assert set(g) == {"delta", "gamma", "theta", "price"}
+
+    def test_reproduced_off_center_case(self):
+        """S0 = K = 10, sigma 0.3, T = 5: searchsorted picked the node above the center
+        and gave a delta of 0.7771 against 0.7606 from Black-Scholes."""
+        opt = OptionSpec(S0=10, K=10, T=5.0, r=0.05, sigma=0.3)
+        g = fd_greeks(opt, CALL, N_S=400, N_t=400)
+        assert abs(g["delta"] - bs_greeks(opt, CALL)["delta"]) < 1e-3
+
+    @pytest.mark.parametrize("kind", [CALL, PUT])
+    def test_atm_sweep_delta_stays_close_to_black_scholes(self, kind):
+        """Across spots, vols and expiries with S0 = K, the old node choice was off by up
+        to 0.017 in delta for some of the cases; the grid itself is good to well under 1e-3."""
+        worst = 0.0
+        for S0 in (7.5, 10.0, 20.0, 33.3, 50.0, 100.0, 123.45, 250.0, 1000.0):
+            for sigma in (0.1, 0.2, 0.3, 0.5):
+                for T in (0.25, 1.0, 2.0, 5.0):
+                    if sigma * np.sqrt(T) > 4.0:
+                        continue
+                    opt = OptionSpec(S0=S0, K=S0, T=T, r=0.05, sigma=sigma)
+                    g = fd_greeks(opt, kind, N_S=400, N_t=400)
+                    worst = max(worst, abs(g["delta"] - bs_greeks(opt, kind)["delta"]))
+        assert worst < 1e-3
+
+    def test_derivatives_are_read_at_the_center_node(self):
+        """An even N_S puts a node exactly on ln(S0), so delta and gamma must be the central
+        differences at that node, whatever rounding does to the grid."""
+        from optpricer.pde import _build_grid, _fd_solve
+
+        n = 400
+        for S0 in np.geomspace(5.0, 5000.0, 60):
+            opt = OptionSpec(S0=S0, K=S0, T=5.0, r=0.05, sigma=0.3)
+            x, dx, dt = _build_grid(S0, 5.0, 0.3, n, n, 4.0)
+            V, _ = _fd_solve(x, dx, dt, n, S0, 0.05, 0.0, 0.3, CALL, 0.5, False,
+                             return_two_layers=True)
+            c = n // 2
+            d1 = (V[c + 1] - V[c - 1]) / (2 * dx)
+            d2 = (V[c + 1] - 2 * V[c] + V[c - 1]) / dx ** 2
+            g = fd_greeks(opt, CALL, N_S=n, N_t=n)
+            assert g["delta"] == pytest.approx(d1 / S0, rel=1e-12, abs=1e-14)
+            assert g["gamma"] == pytest.approx((d2 - d1) / S0 ** 2, rel=1e-12, abs=1e-16)
+
+    def test_odd_grid_still_works(self):
+        """An odd N_S has no node on ln(S0); the nearest one is half a cell away."""
+        g = fd_greeks(OPT, CALL, N_S=401, N_t=N_t)
+        assert abs(g["delta"] - bs_greeks(OPT, CALL)["delta"]) < 0.01
+        assert np.isfinite(g["gamma"]) and np.isfinite(g["price"])
+
+    @pytest.mark.parametrize("kind", [CALL, PUT])
+    @pytest.mark.parametrize("american", [False, True])
+    def test_price_is_what_fd_price_gives_on_the_same_grid(self, kind, american):
+        opt = OptionSpec(S0=100, K=95, T=0.75, r=0.03, sigma=0.25, q=0.02)
+        kw = {"N_S": 300, "N_t": 250, "S_max_mult": 5.0, "american": american}
+        assert fd_greeks(opt, kind, **kw)["price"] == fd_price(opt, kind, **kw)
+
+    def test_price_on_the_default_grid_matches_fd_price(self):
+        assert fd_greeks(OPT, PUT)["price"] == fd_price(OPT, PUT)
+
+    def test_american_put_against_a_fine_tree(self):
+        from optpricer import crr
+
+        def tree(S0):
+            o = OptionSpec(S0=S0, K=110, T=1.0, r=0.05, sigma=0.25)
+            return crr(o, PUT, N=2000, american=True)
+
+        opt = OptionSpec(S0=100, K=110, T=1.0, r=0.05, sigma=0.25)
+        g = fd_greeks(opt, PUT, N_S=N_S, N_t=N_t, american=True)
+        h = 0.5
+        assert abs(g["price"] - tree(100.0)) < 5e-3
+        assert abs(g["delta"] - (tree(100.0 + h) - tree(100.0 - h)) / (2 * h)) < 5e-3
+        euro = fd_greeks(opt, PUT, N_S=N_S, N_t=N_t)
+        assert g["price"] > euro["price"] + 0.1        # a real early-exercise premium
+        assert g["delta"] < euro["delta"]              # exercising early pushes delta toward -1
+
+    def test_american_call_without_dividend_matches_european(self):
+        eu = fd_greeks(OPT, CALL, N_S=N_S, N_t=N_t)
+        am = fd_greeks(OPT, CALL, N_S=N_S, N_t=N_t, american=True)
+        assert abs(am["price"] - eu["price"]) < 1e-6
+        assert abs(am["delta"] - eu["delta"]) < 1e-6
+
+
 class TestFDConvergence:
     def test_convergence_with_refinement(self):
         bs = bs_price(OPT, CALL)

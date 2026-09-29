@@ -26,6 +26,8 @@
       }
     }
     * { box-sizing: border-box; }
+    /* Author rules such as display: flex outrank the browser's own [hidden] rule. */
+    [hidden] { display: none !important; }
     body { margin: 0; background: var(--bg); color: var(--ink);
            font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
     header { padding: 20px 16px 8px; max-width: 1180px; margin: 0 auto; }
@@ -50,6 +52,10 @@
     .cols { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; }
     .cols.wide-first { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
     @media (max-width: 860px) { .cols, .cols.wide-first { grid-template-columns: minmax(0, 1fr); } }
+    /* The engines and Greeks tables need about 830 px of pane to sit side by side without
+       scrolling. Stack them in a narrower pane, as the side-by-side panes are at 1600-1770 px. */
+    #pricing-pane { container-type: inline-size; }
+    @container (max-width: 830px) { .cols.wide-first { grid-template-columns: minmax(0, 1fr); } }
     /* A heading with a control beside it, such as the local-vol time input. */
     .bar { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
            column-gap: 16px; }
@@ -60,10 +66,66 @@
     td.num { font-family: var(--mono); text-align: right; }
     th.num { text-align: right; }
     td.sub { color: var(--muted); white-space: normal; min-width: 9em; }
+    /* A view group: tabs that pick which .view of the group is shown. Tabs look like the h3
+       headings, and a lone tab reads as a heading. */
+    .tabs { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 16px; margin: 14px 0 6px; }
+    .tabs [role="tab"] { font: 600 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+                         text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+                         background: none; border: 0; border-bottom: 2px solid transparent;
+                         padding: 0 0 1px; cursor: pointer; }
+    .tabs [role="tab"][aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+    .tabs [role="tab"]:only-of-type { color: var(--muted); border-bottom-color: transparent; cursor: default; }
+    .tabs [role="tab"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .bar .tabs { margin: 14px 0 6px; }
+    /* The local-vol column is 422 px wide on a 1920 px screen and holds three tabs beside the
+       time input on one row: tighter tabs, a shorter time field, and a busy mark that takes
+       no width (the bare "..." shows while a view computes). From font metrics (uppercase,
+       weight 600), the row is 404 px at 11 px with 0.02em spacing and 427 px at 12 px with
+       0.03em, which wrapped; Arial Bold gives 400 and 424. */
+    .lv-col .bar { column-gap: 8px; }
+    .lv-col .tabs { position: relative; column-gap: 12px; }
+    .lv-col .tabs [role="tab"] { font-size: 11px; letter-spacing: 0.02em; white-space: nowrap; }
+    .lv-col .tabs .spin { position: absolute; left: 100%; margin-left: 0; }
+    .lv-col form.inline input { width: 5em; }
+    /* A view with its own input keeps it outside the swapped .view-body. Where a chart in
+       the body fills the space left, the body is a flex column like the view around it. */
+    label.lv-strike { flex-direction: row; align-items: center; gap: 8px; margin: 2px 0; }
+    label.lv-strike input { width: 6em; }
+    table.compact { line-height: 1.35; }
+    table.compact th, table.compact td { padding: 3px 6px; }
+    p.lv-status { margin: 4px 0 2px; font-size: 12px; color: var(--muted); }
+    p.lv-note { margin: 4px 0 2px; font-size: 12px; line-height: 1.4; }
+    @media (min-width: 861px) {
+      .lv-col .view-body { flex: 1 1 auto; display: flex; flex-direction: column; }
+      /* Only the chart gives way: a table wrapped in .scroll has no automatic minimum height
+         and would otherwise be squeezed to a scrollbar instead of growing the column. */
+      .lv-col .view-body > :not(.chart) { flex: 0 0 auto; }
+    }
     h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); font-weight: 600;
          text-transform: uppercase; letter-spacing: 0.04em; }
     .chart { width: 100%; height: 320px; }
     .chart.tall { height: 420px; }
+    /* Pricing pane. Sub-lines under a price and the caption under the engines table stay small so
+       the pane grows by one line at most. The "Solve for" select needs room for "Implied vol". */
+    .stack { display: block; font-size: 12px; line-height: 1.3; color: var(--muted); }
+    p.caption { margin: 2px 0 0; font-size: 12px; line-height: 1.3; color: var(--muted); }
+    p.iv-line { margin: 0 0 2px; font-size: 13px; line-height: 1.3; }
+    table.engines td.sub { min-width: 6em; }    /* five columns now; Method wraps before the table scrolls */
+    table.greeks td[title], table.greeks td span[title], table.engines td.sub[title],
+    table.engines .stack[title] { text-decoration: underline dotted var(--muted);
+                                  text-underline-offset: 3px; cursor: help; }
+    #price-form select { font-size: 13px; padding-right: 2px; }
+    @media (min-width: 1600px) {
+      #price-form.inputs { grid-template-columns: repeat(6, minmax(0, 1fr)) minmax(0, 0.9fr) minmax(0, 1.5fr); }
+    }
+    /* The scenarios view fills the ladder chart's 320 px slot: a 28 px selector row, then 292 px. */
+    .scen-bar { height: 28px; display: flex; align-items: center; justify-content: space-between;
+                gap: 12px; font-size: 12px; color: var(--muted); }
+    .scen-bar label { flex-direction: row; align-items: center; gap: 6px; }
+    .scen-bar select { width: auto; font-size: 12px; padding: 2px 6px; }
+    .scen-bar span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .scen-view .view-body, .scen-chart, .scen-note { height: 292px; }
+    .scen-note { display: flex; align-items: center; justify-content: center; text-align: center; margin: 0; }
     .error { background: var(--bad-bg); color: var(--bad); border-radius: 6px; padding: 10px 12px; }
     .warn { color: var(--accent-2); font-size: 13px; }
     p.warn { margin: 4px 0; }
@@ -81,8 +143,8 @@
        charts end on the same line however many notes there are, and the page does not grow. */
     @media (min-width: 861px) {
       .lv-col { display: flex; flex-direction: column; }
-      #lv-result { flex: 1 1 auto; display: flex; flex-direction: column; }
-      #lv-chart { flex: 1 1 0; min-height: 260px; height: auto; }
+      .lv-col > .view { flex: 1 1 auto; display: flex; flex-direction: column; }
+      .lv-col .view .chart { flex: 1 1 0; min-height: 260px; height: auto; }
     }
     /* Wide screens put the two panes side by side, sized so both fit a 1920 x 1080 display
        without scrolling. Narrower windows keep the stacked layout above. */
@@ -97,7 +159,7 @@
       form.inputs { grid-auto-flow: column; grid-template-columns: none; grid-auto-columns: minmax(0, 1fr);
                     margin-bottom: 12px; }
       .cols { gap: 16px; }
-      h3 { margin: 10px 0 4px; }
+      h3, .tabs, .bar .tabs { margin: 10px 0 4px; }
       /* Keeps the engines table from scrolling at the narrowest side-by-side width. */
       th, td { padding: 6px 6px; }
     }
@@ -118,6 +180,45 @@
       return Object.assign(base, extra || {});
     }
     const PLOT_CONFIG = { responsive: true, displaylogo: false };
+
+    // View groups. A .tabs strip with data-group="g" picks which .view[data-group="g"] shows.
+    // A view loads from its hx-post when shown ("shown") and, while visible, again once its
+    // form's input settles ("refresh"; data-follows names the form). Hidden views do no work.
+    // An input with data-view-memo="g" records the choice so a server re-render can keep it.
+    (function () {
+      const timers = new WeakMap();
+      function select(group, name) {
+        document.querySelectorAll(`.tabs[data-group="${group}"] [role="tab"]`).forEach(
+          (t) => t.setAttribute("aria-selected", String(t.dataset.view === name)));
+        const memo = document.querySelector(`input[data-view-memo="${group}"]`);
+        if (memo) memo.value = name;
+        document.querySelectorAll(`.view[data-group="${group}"]`).forEach((v) => {
+          const show = v.dataset.view === name;
+          if (show !== v.hidden) return;          // already in the wanted state
+          v.hidden = !show;
+          if (show) htmx.trigger(v, "shown");
+        });
+      }
+      document.addEventListener("click", (e) => {
+        const tab = e.target.closest('.tabs [role="tab"]');
+        if (tab) select(tab.closest(".tabs").dataset.group, tab.dataset.view);
+      });
+      document.addEventListener("input", (e) => {
+        const form = e.target.form;
+        if (!form || !form.id) return;
+        document.querySelectorAll(`.view[data-follows="${form.id}"]`).forEach((v) => {
+          if (v.hidden) return;
+          clearTimeout(timers.get(v));
+          timers.set(v, setTimeout(() => htmx.trigger(v, "refresh"), 250));
+        });
+      });
+      // Views that arrive visible (the page itself, or a refitted surface) load straight away.
+      htmx.onLoad((root) => {
+        const views = root.matches && root.matches(".view") ? [root] : [];
+        if (root.querySelectorAll) views.push(...root.querySelectorAll(".view"));
+        views.filter((v) => !v.hidden).forEach((v) => htmx.trigger(v, "shown"));
+      });
+    })();
   </script>
 </head>
 <body>

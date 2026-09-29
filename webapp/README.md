@@ -1,8 +1,8 @@
 # optpricer web prototype
 
 A FastAPI + HTMX front end for `optpricer`, with Plotly for charts. It prices one
-contract with Black-Scholes, a binomial tree, Monte Carlo and finite differences,
-calibrates an SVI surface, and draws Dupire local volatility from it. Every input
+contract with all five of the library's engines, calibrates an SVI surface, and
+checks what Dupire local volatility built from that surface does. Every input
 change recomputes on the server.
 
 This is a **prototype**. The volatility surface is calibrated to *synthetic*
@@ -27,6 +27,7 @@ Interactive API docs are generated at <http://localhost:8000/docs>.
 | Path | Role |
 |---|---|
 | `engine.py` | Validated, bounded wrappers over `optpricer`. All limits live here. |
+| `localvol.py` | The surface pane's repriced-smile and delta/dynamics views. |
 | `main.py` | Routes: `/` (page), `/ui/*` (HTMX fragments), `/api/*` (JSON). |
 | `templates/` | Jinja templates: the page and one fragment per panel. |
 
@@ -36,11 +37,40 @@ and SciPy only, and none of this ships in its wheel.
 ## Screen layout
 
 At 1,600 px wide and above, the pricing and surface panes sit side by side. The
-target is a 1920 × 1080 display, where the page ends 861 px down. That fits a
+target is a 1920 × 1080 display, where the page ends 876 px down. That fits a
 maximized browser window, which leaves the page about 940–975 px of height,
 without scrolling. Narrower windows stack the panes, and below 860 px each pane
-becomes a single column. The synthetic-quotes disclosure is a badge in the
-surface heading, so it stays in view in every layout.
+becomes a single column. The pricing pane's two tables need about 830 px to sit
+side by side, so in a narrower pane (windows under about 1,780 px) they stack
+rather than scroll. The synthetic-quotes disclosure is a badge in the surface
+heading, so it stays in view in every layout.
+
+Each pane holds tabs. A tab's view loads from its own route when it is shown and,
+while it is visible, again after the inputs settle; hidden views do no work.
+
+## What the panes show
+
+**Pricing.**
+- One contract priced by Black-Scholes, a 500-step binomial tree, Monte Carlo,
+  finite differences and finite elements, each against Black-Scholes in basis
+  points. The tree and the grid also price the American option, in their own
+  column, and a caption gives the early-exercise premium from each.
+- Greeks from Black-Scholes, from the finite-difference grid, and for the American
+  option from the grid.
+- "Solve for: Implied vol" reads the volatility field as a market price and
+  prices everything at the implied volatility it solves for.
+- Tabs: price and delta across spot, and a spot × volatility P&L heat map at five
+  rate shocks.
+
+**Volatility surface.**
+- SVI fitted slice by slice to synthetic quotes, drawn in 3D as implied vol or as
+  total variance.
+- Local vol: Dupire local volatility across spot at a chosen time.
+- Repriced smile: 11 strikes priced by the local-vol PDE and turned back into
+  implied vols, against the surface they came from. This checks whether Dupire
+  reproduces the surface.
+- Dynamics: local-vol delta and gamma at a chosen strike, against Black-Scholes,
+  and how the implied vol at that strike moves as spot moves.
 
 ## Design decisions
 
@@ -91,6 +121,52 @@ surface heading, so it stays in view in every layout.
   and Plotly's positioning CSS depends on it. As a result, every chart broke
   after the first input change: layers stacked down the page and the 3D
   colorbar drifted off the plot. The page sets `attributesToSettle` to `[]`.
+- **Finite-difference and finite-element grids cover the strike and the forward.**
+  The library centers its grid on spot, 4 σ√T wide, whatever the strike or drift,
+  which left 37% of prices at the app's input caps more than 10 bp from
+  Black-Scholes. The app widens the grid, with proportionally more nodes, when the
+  strike or the forward sits more than one σ√T from spot; that leaves 8.7%, mostly
+  tiny out-of-the-money prices. The Method cell says when the grid was widened.
+  The two engines share the grid, so their agreement is not independent evidence.
+- **American Greeks come from the grid, never from a bumped tree.** Delta, gamma
+  and theta come from the same solve as the price. Vega and rho are central
+  differences on a grid held fixed, so the nodes do not move with the bump; on 150
+  contracts without early exercise they are within 0.38% and 0.25% of the exact
+  values. Gamma from a 1% tree bump was 79% wrong at the default contract. Where
+  the grid cannot reach 1% accuracy (total volatility above 2.5), the cells show a
+  dash.
+- **Implied volatility is solved with a bracketed method, after a guard.** The
+  price must lie strictly between the no-arbitrage bound and the Black-Scholes price
+  at the page's maximum volatility, and the message says which side it misses. The
+  library's vectorized Newton solver is not used: from a fixed start it returns
+  NaN on many out-of-the-money prices.
+- **Monte Carlo counts antithetic pairs.** 200,000 pairs is 400,000 terminal
+  prices. The row shows z, the gap to Black-Scholes in standard errors, and flags
+  |z| > 3, except when the standard error is at floating-point noise (deep in the
+  money, where the control variate absorbs the whole payoff).
+- **The default smile is gentle on purpose.** The earlier default (skew −0.30,
+  curvature 0.60) had butterfly arbitrage in its extrapolated wing, and the
+  local-vol PDE repriced it up to 1,044 vol bps off at T = 1. The default is now
+  skew −0.10, curvature 0.10, which reprices within about 4 vol bps at T = 1 and
+  16 at T = 2. Steeper smiles can still be entered, and the repriced-smile view
+  shows what happens.
+- **The repriced smile is one grid, many strikes.** Every strike shares the grid,
+  so the Dupire function is evaluated once per time step for all 11 solves instead
+  of once per solve: about 35 ms instead of about 100. The memo lives inside the
+  request. The library's local-vol solver reads the volatility at the start of each
+  backward time step, a first-order error that showed as up to 32 vol bps on
+  surfaces with a steep term structure; the app reads it half a step later, which
+  brings that to about 3.
+- **Local-vol delta is sticky local vol, and says so.** It holds the local-vol
+  function fixed in absolute spot, so it differs from the Black-Scholes
+  (sticky-strike) delta by design; a Milstein Monte Carlo check agrees with the
+  grid to 0.0006.
+- **A surface must match the spot and rates it is used with.** The surface carries
+  the forwards it was fitted with. Every local-vol route refuses a surface whose
+  forward at the chosen time differs from S0·e^((r−q)t) by more than 0.5%, plus the
+  slack of the surface's own linear interpolation between quoted forwards. The two
+  PDE views read the forward at every time step, so they check every quoted forward
+  up to that time. A tampered forward had priced a call at 54.39 with spot at 100.
 - **The local-vol chart takes the height its notes leave.** Beside the 3D chart,
   it shrinks when extrapolation or clipping notes appear, so both charts end on
   the same line and the page does not grow. It is drawn after a zero timeout,
@@ -99,34 +175,49 @@ surface heading, so it stays in view in every layout.
 
 ## Measured latency
 
-End-to-end HTTP round trips to a live server on localhost, 25 requests each, on
-an otherwise idle machine. They scale with machine load: under a load average
-near 250 the same requests took roughly twice as long.
+Compute time per request, measured in-process as CPU time, 25 runs each. Another
+job held the machine at a load average of 80–100 on 16 cores, which made
+wall-clock times unrepeatable and inflates these too: surface calibration, which
+this work did not change, measured 238 ms here against 166 ms end to end on an
+idle machine. Treat them as upper bounds.
 
 | Request | Median | 90th percentile |
 |---|---|---|
-| Page load | 2 ms | 3 ms |
-| Price fragment, all four engines | 33 ms | 74 ms |
-| Local vol from a client-held surface | 4 ms | 8 ms |
-| Surface calibration fragment | 166 ms | 204 ms |
-| JSON price API | 36 ms | 49 ms |
+| Price fragment: five engines, American prices and Greeks | 58 ms | 63 ms |
+| Price fragment in implied-vol mode | 59 ms | 65 ms |
+| Spot ladder view | 0.3 ms | 0.3 ms |
+| Scenarios view | 1.6 ms | 1.6 ms |
+| Surface calibration | 238 ms | 250 ms |
+| Local vol at a time | 0.1 ms | 0.1 ms |
+| Repriced smile | 33 ms | 37 ms |
+| Delta and dynamics | 39 ms | 42 ms |
 
-Calibration is the only step slow enough to notice, so it shows a spinner and
-debounces input by 400 ms instead of 250 ms.
+The price fragment now does about three times the work it did with four engines
+and no American Greeks: 20 ms of CPU against 65 ms, timed alternately under the
+same load. Calibration is the only step slow enough to notice, so it shows a
+spinner and debounces input by 400 ms instead of 250 ms.
 
 ## JSON API
 
 | Method and path | Body | Returns |
 |---|---|---|
 | `GET /api/health` | none | `{"status": "ok"}` |
-| `POST /api/price` | `S0, K, T, sigma`, optional `r, q, kind, mc_paths` | prices from all four engines (the tree both European and American) and Black-Scholes Greeks |
+| `POST /api/price` | `S0, K, T`, and `sigma` or `market_price`; optional `r, q, kind, mc_paths` | prices from every engine (the tree and the grid also American), Black-Scholes and grid Greeks, the early-exercise premium, and the grid used; with `market_price`, the implied vol |
 | `POST /api/surface/fit` | smile parameters, all optional | a serialized `VolSurface` and per-slice fit error |
 | `POST /api/surface/localvol` | `surface` (as returned above), `S0, t`, optional `r, q` | local and implied vol across spot |
+| `POST /api/surface/lvsmile` | the same | the smile repriced by the local-vol PDE against the surface's own, with the gap in vol bps |
+| `POST /api/surface/lvdynamics` | the same, plus optional `K` (default: the ATM forward) | local-vol and Black-Scholes delta and gamma, and implied vol at `K` as spot moves |
 
 ## Known limitations
 
 - Quotes are synthetic; nothing here reads market data yet.
 - HTMX and Plotly.js come from CDNs, pinned to exact versions.
 - No authentication, rate limiting or deployment configuration.
-- American pricing appears only in the binomial row; the other engines are European.
-- The library's fifth engine, finite elements, is not in the app.
+- The implied vol solved from a market price is the European Black-Scholes vol,
+  even when the price is meant as an American one.
+- The library's finite-difference and finite-element solvers leave the dividend
+  factor out of their far boundary values. At typical inputs this moves prices
+  with a dividend by about 1e-5 to 1e-4; a fix is planned together with the
+  notebook numbers it changes.
+- Heston and SABR paths, exotics and the delta-hedge backtest stay in the
+  notebooks until library bugs they rest on are fixed.

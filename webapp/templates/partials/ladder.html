@@ -1,0 +1,20 @@
+<div id="ladder-chart" class="chart"></div>
+<script>
+  (function () {
+    const L = {{ res.ladder|tojson }};
+    const K = {{ res.K|tojson }};
+    const css = getComputedStyle(document.documentElement);
+    Plotly.newPlot("ladder-chart", [
+      { x: L.spot, y: L.price, name: "Price", mode: "lines",
+        line: { color: css.getPropertyValue("--accent").trim(), width: 2 } },
+      { x: L.spot, y: L.delta, name: "Delta", mode: "lines", yaxis: "y2",
+        line: { color: css.getPropertyValue("--accent-2").trim(), width: 2, dash: "dot" } },
+    ], plotLayout({
+      xaxis: { title: "Spot", gridcolor: css.getPropertyValue("--line").trim() },
+      yaxis: { title: "Price", gridcolor: css.getPropertyValue("--line").trim() },
+      yaxis2: { title: "Delta", overlaying: "y", side: "right", showgrid: false },
+      shapes: [{ type: "line", x0: K, x1: K, yref: "paper", y0: 0, y1: 1,
+                 line: { color: css.getPropertyValue("--muted").trim(), width: 1, dash: "dash" } }],
+    }), PLOT_CONFIG);
+  })();
+</script>

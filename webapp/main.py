@@ -25,7 +25,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from . import engine
+from . import engine, localvol
 
 MAX_BODY_BYTES = 1_000_000
 
@@ -97,8 +97,20 @@ app = FastAPI(title="optpricer", version="0.1.0-prototype")
 app.add_middleware(BodySizeLimit, max_bytes=MAX_BODY_BYTES)
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
+# Views in the surface pane's local-vol column, in tab order; the first is the default.
+# Each loads from its route with the fields of the column's form.  Labels are short enough
+# to share a row with the time input in the 422 px column of a 1920 px screen.  A view with
+# "strike": True has an input of its own, which the surface template renders outside the
+# swapped content so that typing is not interrupted by a re-render.
+LV_VIEW_LIST = [
+    {"key": "at-t", "label": "Local vol", "route": "/ui/localvol"},
+    {"key": "smile", "label": "Repriced smile", "route": "/ui/lvsmile"},
+    {"key": "dynamics", "label": "Dynamics", "route": "/ui/lvdynamics", "strike": True},
+]
+LV_VIEWS = tuple(v["key"] for v in LV_VIEW_LIST)
+
 DEFAULTS = {"S0": 100, "K": 100, "T": 1.0, "r": 0.05, "q": 0.0, "sigma": 0.20,
-            "kind": "call", "atm_vol": 0.20, "skew": -0.30, "curvature": 0.60,
+            "kind": "call", "atm_vol": 0.20, "skew": -0.10, "curvature": 0.10,
             "term_slope": 0.02, "t": 0.5}
 
 
@@ -136,18 +148,45 @@ def index(request: Request):
 @app.post("/ui/price", response_class=HTMLResponse)
 def ui_price(request: Request, S0: str = Form(""), K: str = Form(""), T: str = Form(""),
              r: str = Form(""), q: str = Form(""), sigma: str = Form(""),
-             kind: str = Form("call")):
+             kind: str = Form("call"), solve: str = Form("price")):
+    # In "Solve for: Implied vol" mode the volatility field holds the market price.
     try:
-        result = engine.price_all(S0, K, T, r, q, sigma, kind)
+        vol, market_price = engine.vol_source(solve, sigma)
+        result = engine.price_all(S0, K, T, r, q, vol, kind, market_price=market_price)
     except engine.InputError as exc:
         return _error(request, str(exc))
     return templates.TemplateResponse(request, "partials/pricing.html", {"res": result})
 
 
+@app.post("/ui/ladder", response_class=HTMLResponse)
+def ui_ladder(request: Request, S0: str = Form(""), K: str = Form(""), T: str = Form(""),
+              r: str = Form(""), q: str = Form(""), sigma: str = Form(""),
+              kind: str = Form("call"), solve: str = Form("price")):
+    try:
+        vol, market_price = engine.vol_source(solve, sigma)
+        result = engine.spot_ladder(S0, K, T, r, q, vol, kind, market_price=market_price)
+    except engine.InputError as exc:
+        return _error(request, str(exc))
+    return templates.TemplateResponse(request, "partials/ladder.html", {"res": result})
+
+
+@app.post("/ui/scenarios", response_class=HTMLResponse)
+def ui_scenarios(request: Request, S0: str = Form(""), K: str = Form(""), T: str = Form(""),
+                 r: str = Form(""), q: str = Form(""), sigma: str = Form(""),
+                 kind: str = Form("call"), solve: str = Form("price")):
+    try:
+        vol, market_price = engine.vol_source(solve, sigma)
+        result = engine.scenario_grid(S0, K, T, r, q, vol, kind, market_price=market_price)
+    except engine.InputError as exc:
+        return _error(request, str(exc))
+    return templates.TemplateResponse(request, "partials/scenarios.html", {"res": result})
+
+
 @app.post("/ui/surface", response_class=HTMLResponse)
 def ui_surface(request: Request, S0: str = Form(""), r: str = Form(""), q: str = Form(""),
                atm_vol: str = Form(""), skew: str = Form(""), curvature: str = Form(""),
-               term_slope: str = Form(""), t: str = Form("")):
+               term_slope: str = Form(""), t: str = Form(""), lv_view: str = Form(""),
+               K: str = Form("")):
     try:
         result = engine.fit_surface(S0, r, q, atm_vol, skew, curvature, term_slope)
     except engine.InputError as exc:
@@ -155,7 +194,12 @@ def ui_surface(request: Request, S0: str = Form(""), r: str = Form(""), q: str =
     # The local-vol form below the chart posts these back with the surface. Its
     # time input lives inside this fragment, so echo whatever the user had there
     # (sent via hx-include) rather than resetting it on every refit.
-    ctx = {"res": result, "S0": S0, "r": r, "q": q, "t": t.strip() or DEFAULTS["t"]}
+    # The same goes for the local-vol view the user had selected, and for a strike typed into
+    # the dynamics view.  Left empty, that field means the ATM forward at the current time
+    # and spot, which the view works out on every request, so it never goes stale.
+    view = lv_view if lv_view in LV_VIEWS else LV_VIEWS[0]
+    ctx = {"res": result, "S0": S0, "r": r, "q": q, "t": t.strip() or DEFAULTS["t"],
+           "lv_view": view, "lv_views": LV_VIEW_LIST, "K": K.strip()}
     return templates.TemplateResponse(request, "partials/surface.html", ctx)
 
 
@@ -169,6 +213,51 @@ def ui_localvol(request: Request, surface: str = Form(""), S0: str = Form(""),
     return templates.TemplateResponse(request, "partials/localvol.html", {"res": result})
 
 
+@app.post("/ui/lvsmile", response_class=HTMLResponse)
+def ui_lvsmile(request: Request, surface: str = Form(""), S0: str = Form(""),
+               t: str = Form(""), r: str = Form(""), q: str = Form("")):
+    try:
+        result = localvol.lv_smile(surface, S0, t, r, q)
+    except engine.InputError as exc:
+        return _error(request, str(exc))
+    return templates.TemplateResponse(request, "partials/lvsmile.html", {"res": result})
+
+
+@app.post("/ui/lvdynamics", response_class=HTMLResponse)
+def ui_lvdynamics(request: Request, surface: str = Form(""), S0: str = Form(""),
+                  t: str = Form(""), r: str = Form(""), q: str = Form(""), K: str = Form("")):
+    try:
+        result = localvol.lv_dynamics(surface, S0, K, t, r, q)
+    except engine.InputError as exc:
+        return _error(request, str(exc))
+    return templates.TemplateResponse(request, "partials/lvdynamics.html",
+                                      {"res": result, "sig": localvol.sig})
+
+
+# The JSON twins of the two views above.  Their request models are defined here, beside
+# the routes, rather than reusing LocalVolRequest, which is declared further down.
+class LvSmileRequest(BaseModel):
+    surface: dict
+    S0: float
+    t: float                    # the expiry, within the surface's quoted range
+    r: float = 0.0
+    q: float = 0.0
+
+
+class LvDynamicsRequest(LvSmileRequest):
+    K: float | None = None      # omitted: the ATM forward, rounded
+
+
+@app.post("/api/surface/lvsmile")
+def api_lv_smile(req: LvSmileRequest):
+    return localvol.lv_smile(json.dumps(req.surface), req.S0, req.t, req.r, req.q)
+
+
+@app.post("/api/surface/lvdynamics")
+def api_lv_dynamics(req: LvDynamicsRequest):
+    return localvol.lv_dynamics(json.dumps(req.surface), req.S0, req.K, req.t, req.r, req.q)
+
+
 # ---------------------------------------------------------------------------
 # JSON API
 # ---------------------------------------------------------------------------
@@ -178,7 +267,8 @@ class PriceRequest(BaseModel):
     T: float
     r: float = 0.0
     q: float = 0.0
-    sigma: float
+    sigma: float | None = None         # exactly one of sigma and market_price
+    market_price: float | None = None  # solves the implied vol, then prices at it
     kind: str = "call"
     mc_paths: float = engine.DEFAULT_MC_PATHS   # float: the engine range-checks it
 
@@ -188,8 +278,8 @@ class SurfaceRequest(BaseModel):
     r: float = 0.0
     q: float = 0.0
     atm_vol: float = 0.2
-    skew: float = -0.3
-    curvature: float = 0.6
+    skew: float = -0.1
+    curvature: float = 0.1
     term_slope: float = 0.02
 
 
@@ -209,8 +299,9 @@ def api_health():
 @app.post("/api/price")
 def api_price(req: PriceRequest):
     res = engine.price_all(req.S0, req.K, req.T, req.r, req.q, req.sigma, req.kind,
-                           mc_paths=req.mc_paths)
+                           mc_paths=req.mc_paths, market_price=req.market_price)
     res.pop("ladder")
+    res.pop("rows")     # the table's layout of "engines"; the flat list is the API
     return res
 
 
