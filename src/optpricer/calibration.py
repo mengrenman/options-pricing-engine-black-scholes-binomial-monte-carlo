@@ -959,6 +959,13 @@ def dupire_local_vol(
             "evaluation grid, which made local vol depend on the grid it was "
             "asked about."
         )
+    # A non-positive forward makes log(S/F) NaN at every node. Name it here rather
+    # than let the NaN guard below blame the SVI parameters.
+    if not (math.isfinite(F) and F > 0.0):
+        raise ValueError(
+            f"dupire_local_vol: the forward at t={t:g} is {F!r}; it must be finite "
+            "and positive. Check the surface's forward curve, or the spot passed in."
+        )
 
     k = np.log(S_arr / F)
 
@@ -988,30 +995,61 @@ def dupire_local_vol(
     # over the strike array.
     dwdT = surface.dw_dT_from_logm(k, t)
 
-    # Dupire's formula
+    # Dupire's formula. The two floors keep the ratio finite, but a node where
+    # either one binds is not a computed local vol: dw/dT <= 0 means calendar
+    # arbitrage, a non-positive denominator means butterfly arbitrage. They are
+    # tracked directly rather than inferred from the output, because when BOTH
+    # bind the ratio is exactly 1e-12 / 1e-8, sigma comes out at exactly 0.01, and
+    # a "below the floor" test never fires on a value that is pure floor.
+    denom_raw = (1.0
+                 - (k / w) * dw
+                 + 0.25 * (-0.25 - 1.0 / w + (k / w) ** 2) * dw ** 2
+                 + 0.5 * d2w)
+    numer_floored = dwdT <= 1e-12
+    denom_floored = denom_raw <= 1e-8
     numer = np.maximum(dwdT, 1e-12)
-    denom = (1.0
-             - (k / w) * dw
-             + 0.25 * (-0.25 - 1.0 / w + (k / w) ** 2) * dw ** 2
-             + 0.5 * d2w)
-    denom = np.maximum(denom, 1e-8)  # prevent negative / zero
+    denom = np.maximum(denom_raw, 1e-8)
 
-    sigma_loc_sq = numer / denom
-    sigma_loc = np.sqrt(np.maximum(sigma_loc_sq, 0.0))
+    sigma_loc = np.sqrt(np.maximum(numer / denom, 0.0))
 
-    # Clamping keeps a downstream engine running, but a clamped value is a bound,
-    # not a local vol -- and the two floors above feed straight into it. Where the
-    # surface has calendar arbitrage (total variance falling with expiry) dwdT is
-    # negative, numer is floored at 1e-12, and EVERY node lands on the 0.01 floor.
-    # That used to happen with no signal at all. Message text is constant so the
-    # duplicate filter collapses it across the thousands of calls a PDE solve makes.
-    if np.any(sigma_loc < LOCAL_VOL_FLOOR) or np.any(sigma_loc > LOCAL_VOL_CAP):
+    # NaN cannot be clamped, and every comparison with NaN is False, so it would
+    # otherwise pass the checks below and np.clip untouched. Spot is validated
+    # above; what remains is a degenerate surface (for example SVI sigma = 0).
+    n_nan = int(np.count_nonzero(np.isnan(sigma_loc)))
+    if n_nan:
+        raise ValueError(
+            f"dupire_local_vol: the surface yields NaN local vol at {n_nan} node(s) "
+            f"at t={t:g}; check the SVI parameters (sigma > 0, |rho| < 1, b >= 0)."
+        )
+
+    # Report anything that is a bound rather than a value. Two warnings, low and
+    # high, each tagged with the surface, so the duplicate filter still collapses
+    # the thousands of calls one PDE solve makes -- but a harmless cap on one
+    # surface can no longer hide a calendar-arbitrage floor on another. (A single
+    # constant message did exactly that: the registry keys on text and call site.)
+    #
+    # Where dw/dT < 0 every such node lands on the floor. That is a statement
+    # about nodes, not surfaces: dw/dT is averaged across a quoted expiry's kink,
+    # which can mask calendar arbitrage right at that expiry.
+    # repr, so a label arriving in an untrusted payload cannot inject newlines
+    # into a server log; the id() fallback is per object, stable within a solve.
+    tag = repr(surface.label) if surface.label else f"0x{id(surface):x}"
+    low = numer_floored | (sigma_loc < LOCAL_VOL_FLOOR)
+    high = ~numer_floored & (denom_floored | (sigma_loc > LOCAL_VOL_CAP))
+    if np.any(low):
         warnings.warn(
-            f"Dupire: local vol hit its clip bounds ({LOCAL_VOL_FLOOR} or "
-            f"{LOCAL_VOL_CAP}) at some evaluation nodes; those values are clamped, "
-            "not computed. Values at the floor usually mean the surface has calendar "
-            "arbitrage there; values at the cap, extreme curvature or extrapolation "
-            "far beyond the quoted expiries.",
+            f"Dupire [surface {tag}]: local vol at some nodes is a floor, not a "
+            f"computed value -- dw/dT <= 0 there (calendar arbitrage) or the "
+            f"result fell below {LOCAL_VOL_FLOOR}.",
+            LocalVolClipWarning,
+            stacklevel=2,
+        )
+    if np.any(high):
+        warnings.warn(
+            f"Dupire [surface {tag}]: local vol at some nodes is not a computed "
+            f"value -- the Dupire denominator is <= 0 there (butterfly arbitrage) "
+            f"or the result exceeded {LOCAL_VOL_CAP}, as extreme curvature or "
+            f"extrapolation far beyond the quoted expiries can cause.",
             LocalVolClipWarning,
             stacklevel=2,
         )

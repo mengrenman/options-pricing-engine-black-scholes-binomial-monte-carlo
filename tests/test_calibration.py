@@ -913,16 +913,90 @@ class TestLocalVolClipWarning:
                                                np.linspace(60.0, 140.0, 81), 3.0, 0.05, 0.0))
         assert np.any(v == LOCAL_VOL_CAP)
 
-    def test_values_are_unchanged_only_reported(self):
-        """The fix adds a warning; it must not move a single number."""
+    def test_values_are_the_dupire_formula_clipped_and_nothing_else(self):
+        """The old version of this test only checked the output sat inside the
+        bounds -- true of any clip, so it could not fail. This recomputes Dupire
+        independently from the surface and requires an exact match."""
         from optpricer.calibration import LOCAL_VOL_CAP, LOCAL_VOL_FLOOR, dupire_local_vol
 
         surf = self._steep_extrapolated()
         S = np.linspace(60.0, 140.0, 81)
+        for t, r in ((0.5, 0.05), (2.0, 0.05), (3.0, 0.05)):
+            F = surf.forward_at(t, r, 0.0)
+            k = np.log(S / F)
+            w, dw, d2w = surf.w_dw_d2w_from_logm(k, t)
+            w = np.maximum(w, 1e-12)
+            dwdT = surf.dw_dT_from_logm(k, t)
+            denom = (1.0 - (k / w) * dw + 0.25 * (-0.25 - 1.0 / w + (k / w) ** 2) * dw ** 2
+                     + 0.5 * d2w)
+            ref = np.clip(np.sqrt(np.maximum(dwdT, 1e-12) / np.maximum(denom, 1e-8)),
+                          LOCAL_VOL_FLOOR, LOCAL_VOL_CAP)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                got = np.atleast_1d(dupire_local_vol(surf, S, t, r, 0.0))
+            assert np.array_equal(got, ref), f"t={t}"
+
+    def test_clipped_count_is_pinned(self):
+        """Four of 81 nodes at the cap at r=0.05. (An earlier commit message said
+        two: that count came from a probe at r=0.03 and was misattributed.)"""
+        from optpricer.calibration import LOCAL_VOL_CAP, dupire_local_vol
+
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            v = np.atleast_1d(dupire_local_vol(surf, S, 3.0, 0.05, 0.0))
-        assert v.min() >= LOCAL_VOL_FLOOR and v.max() <= LOCAL_VOL_CAP
+            v = np.atleast_1d(dupire_local_vol(self._steep_extrapolated(),
+                                               np.linspace(60.0, 140.0, 81), 3.0, 0.05, 0.0))
+        assert int(np.sum(v == LOCAL_VOL_CAP)) == 4
+
+    def test_doubly_floored_nodes_warn(self):
+        """Where both floors bind the ratio is exactly 1e-12 / 1e-8, so sigma is
+        exactly 0.01 and 'below the floor' never fires. Floors are now tracked
+        directly."""
+        from optpricer.calibration import LOCAL_VOL_FLOOR, LocalVolClipWarning, dupire_local_vol
+
+        near = SVIParams(a=0.30, b=2.5, rho=-0.99, m=0.0, sigma=0.02, expiry=0.5)
+        far = SVIParams(a=0.10, b=2.5, rho=-0.99, m=0.0, sigma=0.02, expiry=1.0)
+        surf = VolSurface({0.5: near, 1.0: far}, forward_curve={0.5: 100.0, 1.0: 100.0})
+        with pytest.warns(LocalVolClipWarning, match="floor"):
+            v = np.atleast_1d(dupire_local_vol(surf, np.linspace(60.0, 160.0, 201),
+                                               0.75, 0.03, 0.0))
+        assert np.any(v == LOCAL_VOL_FLOOR)
+
+    def test_one_surfaces_warning_does_not_hide_anothers(self):
+        """With one constant message, a harmless cap on one surface suppressed a
+        later calendar-arbitrage floor on another: the duplicate registry keys on
+        text and call site. Messages are now split low/high and tagged by surface."""
+        from optpricer.calibration import LocalVolClipWarning, dupire_local_vol
+
+        steep = self._steep_extrapolated()
+        steep.label = "STEEP"
+        cal = self._calendar_arbitrage()
+        cal.label = "CAL"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("default")
+            for t in np.linspace(2.5, 3.0, 20):
+                dupire_local_vol(steep, np.linspace(60.0, 140.0, 81), float(t), 0.05, 0.0)
+            for t in np.linspace(0.55, 0.95, 20):
+                dupire_local_vol(cal, np.linspace(80.0, 120.0, 9), float(t), 0.03, 0.0)
+        msgs = [str(w.message) for w in caught if issubclass(w.category, LocalVolClipWarning)]
+        assert len(msgs) == 2
+        assert any("'STEEP'" in m for m in msgs) and any("'CAL'" in m for m in msgs)
+
+    def test_nan_from_a_degenerate_surface_raises(self):
+        from optpricer.calibration import dupire_local_vol
+
+        bad = VolSurface({1.0: SVIParams(a=np.nan, b=0.1, rho=0.0, m=0.0, sigma=0.1,
+                                         expiry=1.0)}, forward_curve={1.0: 100.0})
+        with pytest.raises(ValueError, match="NaN local vol"):
+            dupire_local_vol(bad, np.linspace(80.0, 120.0, 9), 0.5, 0.03, 0.0)
+
+    @pytest.mark.parametrize("fwd", [-100.0, 0.0])
+    def test_non_positive_forward_names_the_forward(self, fwd):
+        from optpricer.calibration import dupire_local_vol
+
+        p = SVIParams(a=0.04, b=0.1, rho=-0.3, m=0.0, sigma=0.1, expiry=1.0)
+        surf = VolSurface({1.0: p}, forward_curve={1.0: fwd})
+        with pytest.raises(ValueError, match="forward at t="):
+            dupire_local_vol(surf, np.linspace(80.0, 120.0, 9), 0.5, 0.03, 0.0)
 
     def test_is_a_runtime_warning_so_existing_filters_still_apply(self):
         from optpricer.calibration import LocalVolClipWarning
